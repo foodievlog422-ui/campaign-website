@@ -169,7 +169,7 @@ async function layout(user, title, body) {
     ? `<span class="who">${esc(user.name)}</span><a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}<form method="post" action="/logout" class="inline"><button class="linkbtn" type="submit">Logout</button></form>`
     : `<a href="/login">Login</a><a class="btn small amber" href="/signup">Sign up</a>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · ${site}</title><meta name="mitgo-verification" content="e97a990a-6417-4648-983f-b821ae013a95"><link rel="stylesheet" href="/style.css"></head><body>
+<title>${esc(title)} · ${site}</title><meta name="mitgo-verification" content="e97a990a-6417-4648-983f-b821ae013a95"><meta name="mylead-verification" content="ba856886239dedcc56ca0541621fdb50"><link rel="stylesheet" href="/style.css"></head><body>
 <header><div class="wrap head"><a class="logo" href="/"><span class="mark">₹</span>${site}</a><nav>${nav}</nav></div></header>
 <main class="wrap">${body}</main>
 <footer><div class="wrap foot"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a></div></footer>
