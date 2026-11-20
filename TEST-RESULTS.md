@@ -1,66 +1,52 @@
-# Test Results — Campaign Website V2.1
+# Test Results — Campaign Website V3
 
-Run: 2026-11-20 (IST), in this VM. Command: `npm test` (`node tests/run-tests.mjs`).
-The suite spawns the real server on a test port with a throwaway SQLite DB, `SEED_DEMO=true`, a sentinel postback secret, and drives everything over HTTP. Raw log: `tests/last-run.txt`.
+Run: 2026-11-20 (IST), in this VM. Command: `npm test` — now a chain of four suites:
+`tests/run-tests.mjs` (HTTP end-to-end, SQLite) + `tests/test-translate.mjs` (Postgres SQL translator units) + `tests/test-retention.mjs` (retention, facade-level) + `tests/pg-smoke.mjs` (live Postgres smoke — self-skips without `TEST_DATABASE_URL`).
 
-## Result: 46/46 PASS
+## Headline results
 
-V2.1 change (owner request): the **admin campaign list** now shows, on every campaign card, three compact chips — **Company payout** (upstream, ₹), **User reward**, and **Margin** (payout − user reward). Campaigns with no upstream payout set (custom/referral campaigns) show `—` for payout and margin. These values render only inside the authenticated admin area; public pages/API remain clean (tests 8e1–8e4, marked ★★).
+| Suite | Result |
+|---|---|
+| HTTP end-to-end (SQLite, real server over HTTP) | **46/46 PASS** (unchanged from V2.1 — same behaviour on the new async data layer) |
+| SQL translator unit tests (`translatePgSql`) | **12/12 PASS** |
+| Retention tests (both tiers) | **15/15 PASS** |
+| Postgres smoke (`TEST_DATABASE_URL`) | **SKIPPED in this VM** — no live Postgres available here; the live run is part of deploy verification (see below) |
+| Postgres engine verification via pg-mem (throwaway, not committed) | **9/9 PASS** (1 partial, documented below) |
 
-V1 tests were kept; the approval-flow tests (4c/4d/4e) were updated to the V2 behaviour the owner asked for: approval no longer pays out directly — money waits in **Approved (release pending)** until the admin releases it. New V2 tests are marked ★.
+## V3 change 1 — Postgres when `DATABASE_URL` is set
 
-| # | Test | Result |
-|---|---|---|
-| 1a | Server starts, home page loads (200) | PASS |
-| 1b | Campaigns list renders the 3 seeded demo campaigns | PASS |
-| 1c | Public API lists exactly 3 campaigns | PASS |
-| 2a | Signup redirects to dashboard | PASS |
-| 2b | Remember-me cookie present, `HttpOnly`, `Max-Age=2592000` (30 days) | PASS |
-| 2c | Referral code/link issued to new user | PASS |
-| 2d | Logout → login works, remember cookie set again | PASS |
-| 3a | Start campaign creates unique `click_id`, redirects to progress page | PASS |
-| 3b | Progress page shows the full timeline, Clicked step done | PASS |
-| 3c | Progress API reports stage 0 = Clicked | PASS |
-| 5a | Postback with WRONG secret → 401 rejected, wallet stays ₹0 | PASS |
-| 4a | Postback `status=pending` → PENDING wallet credited ₹250 | PASS |
-| 5b | Duplicate pending postback → idempotent, still ₹250 | PASS |
-| 4b | Postback `event=installed` → progress advances to Installed (stage 2) | PASS |
-| 4c ★ | Approval moves ₹250 Pending → **Approved (release pending)**, Withdrawable stays ₹0 | PASS |
-| 4c2 ★ | Stage = Approved (5, not Wallet Credited) + expected credit date shown = approval + 7 days | PASS |
-| 4d ★ | Referral commission 10% = ₹25 **held** in referrer's Approved bucket, not withdrawable yet | PASS |
-| 4f1 ★ | Admin → Releases lists the approved conversion with its release action | PASS |
-| 4f2 ★ | Admin manual release → ₹250 withdrawable for user + ₹25 referral paid to referrer | PASS |
-| 5c | Duplicate approved postback after release → idempotent, no double credit | PASS |
-| 4e | Progress timeline reaches "Wallet Credited" **after release** (all 7 steps) | PASS |
-| 6 | **Leak test** — public pages + API contain NO postback secret, NO upstream payout values, NO sentinel, NO `upstream_payout` field | PASS — clean |
-| 7a | Withdrawal request (₹250, UPI) accepted | PASS |
-| 7b | Withdrawal shows `pending`, amount held from withdrawable balance | PASS |
-| 7c | Admin sees the pending withdrawal | PASS |
-| 7d | Admin approves → user sees status `paid` | PASS |
-| 7e | Admin postback log records both ACCEPTED and REJECTED calls | PASS |
-| 8a1 ★ | **App tracking:** postback `event=install` → stage Installed | PASS |
-| 8a2 ★ | Postback `event=register` → stage Registered | PASS |
-| 8a3 ★ | Postback `event=kyc` → stage KYC Done — full in-app sequence via postbacks only | PASS |
-| 8b1 ★ | **Multi-feed + auto pricing:** feed added in Settings, import creates campaign; upstream ₹400 × 87.5% share → user reward auto = **₹350** (35000 paise) | PASS |
-| 8b2 ★ | **Leak test 2:** feed token, upstream payout (40000) and margin fields absent from public home + API | PASS — clean |
-| 8b3 ★ | Settings page shows multi-feed list, user share % and credit days fields | PASS |
-| 8b4 ★ | Offer removed from feed → next import **auto-hides** it from the public list | PASS |
-| 8c1 ★ | Custom campaign created (type=custom, random ₹100–₹150); public API exposes only the range | PASS |
-| 8c2 ★ | Custom progress page shows claim form + campaign (referral) link button | PASS |
-| 8c3 ★ | User claim submit → admin Claims list shows it with the note | PASS |
-| 8c4 ★ | Admin approves claim → random amount rolled once (test run: ₹137) into user's Approved bucket | PASS |
-| 8c5 ★ | Release of the claim conversion → rolled amount becomes withdrawable | PASS |
-| 8c6 ★ | Claim reject with reason → reason visible to the user on the progress page | PASS |
-| 8d1 ★ | Admin Earnings page shows upstream total + admin margin | PASS |
-| 8d2 ★ | Earnings page redirects to login for non-admin (numbers never public) | PASS |
-| 8e1 ★★ | Admin campaign list (admin session) shows Company payout for seeded campaign: 123450 paise = **₹1,234.5** | PASS |
-| 8e2 ★★ | Admin list margin = payout − user reward (123450 − 25000 = **₹984.5**), User reward chip present | PASS |
-| 8e3 ★★ | Public home + public API contain NO payout/margin values (₹1,234.5 / ₹984.5 / 123450 / 98450) and no "Company payout" label | PASS — clean |
-| 8e4 ★★ | Custom campaign (no upstream payout) shows payout and margin as **—** in the admin list | PASS |
+Why: Render Free's filesystem is ephemeral — the SQLite file would be wiped on every restart/redeploy, losing wallet/money data. Now: `DATABASE_URL` set → PostgreSQL via the `pg` package (the only dependency; pure JS, ARM-safe), with **all app tables in a dedicated schema `campaign`** inside the owner's existing Supabase project, so nothing collides with the EXN app's tables. No `DATABASE_URL` → local SQLite, unchanged. Schema + tables are created idempotently on boot; the admin is seeded from env exactly as before.
 
-## Extra checks (also PASS)
+How: one async facade (`src/db.js`) — `await db.prepare(sql).get/all/run(...)`. SQL is written once in the SQLite dialect and translated for Postgres: `?`→`$1..$n`, tables schema-qualified (`campaign.<table>`), `datetime('now')`→ UTC `to_char(...)` (same text format), scalar `MAX(a,b)`→`GREATEST(a,b)`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, serial inserts get `RETURNING id` so `lastInsertRowid` behaves like SQLite, and pg int8/numeric are parsed to JS numbers so COUNT/SUM/money math is identical. Money/id columns are `BIGINT` in Postgres (SQLite INTEGER is 64-bit; pg INTEGER would overflow epoch-ms session expiries).
 
-- **V1 → V2 DB migration:** booting V2 against a DB with the old schema adds the new columns (`campaign_type`, `reward_mode`, `link_url`, `credit_days`, conversion release/expected-date columns, user `approved_paise`), creates the `claims` table and the new settings defaults (`user_share_percent=87.5`, `credit_days=7`) — verified directly.
-- **Reconciliation stub:** unchanged, still reports pending count and reuses the same idempotent postback path.
-- **Default mode (SEED_DEMO unset):** V1-verified behaviour kept — demo seed stays behind `SEED_DEMO=true` only.
-- **Docker:** `docker` is not installed in this VM, so the image was not built here. The Dockerfile is unchanged (zero-dependency `node:24-bookworm-slim` copy-and-run); build on the target host with `docker compose up -d --build`.
+Translator units (12/12): placeholders + qualification; user INSERT → `RETURNING id`; sessions INSERT → no RETURNING (no serial id); `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`; settings upsert `excluded.*` preserved; `datetime('now')` conversion; `MAX(stage,1)` → `GREATEST(stage,1)`; importer upsert (`ON CONFLICT(source,external_id) DO UPDATE … excluded.*`) preserved with `RETURNING id` appended; 3-table JOIN qualification with aliases intact; aggregate `SUM(...)` untouched; correlated `NOT EXISTS` delete qualification; no `?` survives in any sample.
+
+pg-mem verification (throwaway harness in /tmp, not committed): the repo's real `PG_DDL`, `translatePgSql` and `runRetention` were executed against pg-mem (in-process Postgres semantics). Passed: DDL creates schema + all 10 tables; INSERT OR IGNORE keeps first value; settings upsert updates; user insert returns numeric id; session insert + BIGINT expiry roundtrip; GREATEST stage update + timestamp format; SUM returns a JS number; importer upsert updates in place. **Partial:** retention's correlated `NOT EXISTS` deletes hit a pg-mem limitation (it cannot resolve bare correlation names like `clicks.click_id` against schema-qualified DELETE targets — valid standard SQL in real Postgres, where the correlation name is the base table name; the identical statements pass on SQLite in the retention suite, and the non-correlated retention deletes were verified in pg form). pg-mem also needed shims for `AT TIME ZONE`/`to_char`, both native in real Postgres. **The live Postgres run (`tests/pg-smoke.mjs` with `TEST_DATABASE_URL` set to the Supabase pooler URI) remains a deploy-verification step.**
+
+## V3 change 2 — Data retention (two tiers)
+
+`src/retention.js`, runs on boot + daily; windows are server-side settings: `retention_days` (default **30**) and `financial_retention_days` (default **60**). Admin dashboard shows the last cleanup time.
+
+**Tier 1 — raw tracking data, purged after 30 days:** postback logs; expired sessions; clicks in a terminal state (rejected / claim-rejected / never converted) with **no** conversion and **no** claim attached. Clicks that carry a conversion/claim are kept — only their stored IP/user-agent is stripped after 30 days.
+
+**Tier 2 — financial records, purged only 60 days AFTER FULL CLOSURE.** This distinction is deliberate and tested explicitly:
+- A conversion is closed when **approved AND released** (referral commission released too, if any), clock from `released_at` — or **rejected**, clock from `updated_at`.
+- A withdrawal is closed when **paid**, or **rejected-and-refunded**, clock from `processed_at`.
+- Wallet-ledger entries purge only when **their account is fully closed**.
+- **HARD GUARD:** if the owning account has **any non-zero balance** (pending / approved / withdrawable) or **any open state** (pending conversion, approved-but-unreleased conversion, pending withdrawal, pending claim), its financial records are **never purged** — they roll forward until closure, and only then does the 60-day clock run. User accounts are never deleted.
+
+Retention tests (15/15, `tests/test-retention.mjs`) — the required distinction, side by side:
+- **Closed 61-day-old financial record → PURGED:** conversion (approved + released 61 days ago), paid withdrawal (61 days), and both wallet-ledger entries of a zero-balance, fully-closed account are all deleted (report counts: 1 conversion / 1 withdrawal / 2 ledger).
+- **Equally old record with a non-zero balance → SURVIVES:** the same trio aged 61 days on an account holding ₹50 withdrawable — conversion, withdrawal and ledger all kept, balance untouched.
+- **Open states survive regardless of age:** a 61-day-old *pending* conversion and a 61-day-old *approved-but-unreleased* conversion are kept, and their account's ledger is kept.
+- **Clock starts at closure, not creation:** a conversion released only 31 days ago is kept (31 < 60).
+- Tier 1 alongside: 31-day terminal click deleted, 1-day terminal click kept, 31-day click *with* a conversion kept with IP/UA stripped, 31-day postback log deleted / fresh kept, expired session deleted / valid kept, user accounts + balances never touched.
+
+## Carried-over V2.1 results (HTTP suite, still 46/46 on the V3 data layer)
+
+The full V1+V2+V2.1 table from the previous run stands — auth + remember-me, click → postback pending → duplicate idempotent → install event → approval to **Approved (release pending)** → admin manual release → withdrawable + referral paid, wrong-secret 401, **leak tests clean** (no secret / upstream payout / margin / sentinel in any public page or API), withdrawals + admin approve, app-event sequence (install→register→kyc via postbacks only), multi-feed import + auto pricing (₹400 × 87.5% = ₹350) + auto-hide, custom/referral campaigns with claims (fixed/random roll, reject reason), admin Earnings, and the admin campaign-list payout/reward/margin chips (admin-only, values absent publicly). Raw HTTP log: `tests/last-run.txt`.
+
+## Notes
+
+- **Docker:** `docker` is not installed in this VM, so the image was not built here. The Dockerfile now runs `npm ci --omit=dev` (for `pg`) before copying sources; build on the target host with `docker compose up -d --build`.
+- **SEED_DEMO** remains off by default and demo seeding is unchanged.

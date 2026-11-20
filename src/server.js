@@ -5,24 +5,25 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, esc, inr, hashPassword, verifyPassword, sha256, randomToken, randomCode, safeEqual, parseCookies, cookieHeader, readBody, parseSteps } from './lib.js';
 import { openDb, getSetting, setSetting, publicCampaign, rewardLabel, seedDemo, ensureAdmin } from './db.js';
 import { importAllFeeds, getFeeds, saveFeeds, reconcilePending } from './importer.js';
+import { runRetention } from './retention.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 loadEnv(ROOT);
 const PORT = Number(process.env.PORT || 3000);
 const DB_PATH = process.env.DB_PATH || path.join(ROOT, 'data', 'app.db');
-const db = openDb(DB_PATH);
-if (process.env.SEED_DEMO === 'true') seedDemo(db);
-ensureAdmin(db);
+const db = await openDb(DB_PATH);
+if (process.env.SEED_DEMO === 'true') await seedDemo(db);
+await ensureAdmin(db);
 
 export const STAGES = ['Clicked', 'Tracking Started', 'Installed', 'Registered', 'KYC / Event Done', 'Approved', 'Wallet Credited'];
-const postbackSecret = () => process.env.POSTBACK_SECRET || getSetting(db, 'postback_secret', '');
+const postbackSecret = async () => process.env.POSTBACK_SECRET || await getSetting(db, 'postback_secret', '');
 
 // Expected wallet credit date = approval date + credit days
 // (per-campaign override wins over the global setting). Returns 'YYYY-MM-DD'.
-export function expectedCreditDate(campaignCreditDays) {
+export async function expectedCreditDate(campaignCreditDays) {
   const days = campaignCreditDays != null && campaignCreditDays !== ''
     ? Number(campaignCreditDays)
-    : Number(getSetting(db, 'credit_days', '7')) || 0;
+    : Number(await getSetting(db, 'credit_days', '7')) || 0;
   const d = new Date(Date.now() + days * 864e5);
   return d.toISOString().slice(0, 10);
 }
@@ -34,61 +35,61 @@ const fmtDate = (iso) => {
 
 // Moves an APPROVED conversion's money into the "Approved — release pending"
 // bucket (user.approved_paise) and holds the referral commission the same way.
-// Nothing becomes withdrawable here — only releaseConversion() does that.
+// Nothing becomes withdrawable here — only await releaseConversion() does that.
 // Shared by the postback path and manual claim approvals. Idempotent via
 // conversions.approved_credited.
-export function holdApproval(click, conv, reward, { fromPending = false } = {}) {
+export async function holdApproval(click, conv, reward, { fromPending = false } = {}) {
   if (fromPending) {
-    db.prepare('UPDATE users SET pending_paise=pending_paise-?, approved_paise=approved_paise+? WHERE id=?').run(reward, reward, click.user_id);
+    await db.prepare('UPDATE users SET pending_paise=pending_paise-?, approved_paise=approved_paise+? WHERE id=?').run(reward, reward, click.user_id);
   } else {
-    db.prepare('UPDATE users SET approved_paise=approved_paise+? WHERE id=?').run(reward, click.user_id);
+    await db.prepare('UPDATE users SET approved_paise=approved_paise+? WHERE id=?').run(reward, click.user_id);
   }
-  db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'approved_pending_release', reward, click.click_id);
+  await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'approved_pending_release', reward, click.click_id);
   let referralAmount = conv.referral_amount_paise || 0;
   if (click.referred_by && !conv.referral_credited) {
-    const pct = Number(getSetting(db, 'referral_percent', '10')) || 0;
+    const pct = Number(await getSetting(db, 'referral_percent', '10')) || 0;
     referralAmount = Math.floor(reward * pct / 100);
     if (referralAmount > 0) {
-      db.prepare('UPDATE users SET approved_paise=approved_paise+? WHERE id=?').run(referralAmount, click.referred_by);
-      db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.referred_by, 'referral_pending_release', referralAmount, click.click_id);
+      await db.prepare('UPDATE users SET approved_paise=approved_paise+? WHERE id=?').run(referralAmount, click.referred_by);
+      await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.referred_by, 'referral_pending_release', referralAmount, click.click_id);
     }
   }
-  db.prepare(`UPDATE conversions SET status='approved', approved_credited=1, referral_credited=1,
+  await db.prepare(`UPDATE conversions SET status='approved', approved_credited=1, referral_credited=1,
     referral_amount_paise=?, user_reward_paise=?, approved_at=datetime('now'), expected_credit_date=?, updated_at=datetime('now')
-    WHERE click_id=?`).run(referralAmount, reward, expectedCreditDate(click.credit_days), click.click_id);
+    WHERE click_id=?`).run(referralAmount, reward, await expectedCreditDate(click.credit_days), click.click_id);
 }
 
 // Admin manual release: APPROVED money (user reward + referral commission)
 // becomes WITHDRAWABLE. This is the ONLY path to "Wallet Credited" (stage 6).
-export function releaseConversion(clickId) {
-  const conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(clickId);
+export async function releaseConversion(clickId) {
+  const conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(clickId);
   if (!conv) return { ok: false, reason: 'no_conversion' };
   if (conv.status !== 'approved') return { ok: false, reason: 'not_approved' };
   if (conv.released) return { ok: true, reason: 'already_released', idempotent: true };
-  const click = db.prepare('SELECT cl.*, u.referred_by FROM clicks cl JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(clickId);
+  const click = await db.prepare('SELECT cl.*, u.referred_by FROM clicks cl JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(clickId);
   const reward = conv.user_reward_paise;
-  db.prepare('UPDATE users SET approved_paise=approved_paise-?, withdrawable_paise=withdrawable_paise+? WHERE id=?').run(reward, reward, click.user_id);
-  db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'wallet_release', reward, clickId);
+  await db.prepare('UPDATE users SET approved_paise=approved_paise-?, withdrawable_paise=withdrawable_paise+? WHERE id=?').run(reward, reward, click.user_id);
+  await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'wallet_release', reward, clickId);
   if (click.referred_by && conv.referral_amount_paise > 0 && !conv.referral_released) {
-    db.prepare('UPDATE users SET approved_paise=approved_paise-?, withdrawable_paise=withdrawable_paise+? WHERE id=?').run(conv.referral_amount_paise, conv.referral_amount_paise, click.referred_by);
-    db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.referred_by, 'referral_credit', conv.referral_amount_paise, clickId);
-    db.prepare('UPDATE conversions SET referral_released=1 WHERE click_id=?').run(clickId);
+    await db.prepare('UPDATE users SET approved_paise=approved_paise-?, withdrawable_paise=withdrawable_paise+? WHERE id=?').run(conv.referral_amount_paise, conv.referral_amount_paise, click.referred_by);
+    await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.referred_by, 'referral_credit', conv.referral_amount_paise, clickId);
+    await db.prepare('UPDATE conversions SET referral_released=1 WHERE click_id=?').run(clickId);
   }
-  db.prepare("UPDATE conversions SET released=1, released_at=datetime('now'), updated_at=datetime('now') WHERE click_id=?").run(clickId);
-  db.prepare("UPDATE clicks SET stage=6, updated_at=datetime('now') WHERE click_id=?").run(clickId);
+  await db.prepare("UPDATE conversions SET released=1, released_at=datetime('now'), updated_at=datetime('now') WHERE click_id=?").run(clickId);
+  await db.prepare("UPDATE clicks SET stage=6, updated_at=datetime('now') WHERE click_id=?").run(clickId);
   return { ok: true, reason: 'released' };
 }
 
 // ---------- postback core (also reused by reconciliation) ----------
-export function applyPostback({ click_id, event = '', status = '', txn_id = '' }) {
-  const click = db.prepare('SELECT cl.*, c.user_reward_paise, c.upstream_payout_paise, c.credit_days, u.referred_by FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(click_id);
+export async function applyPostback({ click_id, event = '', status = '', txn_id = '' }) {
+  const click = await db.prepare('SELECT cl.*, c.user_reward_paise, c.upstream_payout_paise, c.credit_days, u.referred_by FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(click_id);
   if (!click) return { accepted: false, reason: 'unknown_click_id' };
   const reward = click.user_reward_paise;
-  let conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
-  const ensureConv = () => {
+  let conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
+  const ensureConv = async () => {
     if (!conv) {
-      db.prepare('INSERT INTO conversions(click_id,status,txn_id,user_reward_paise,upstream_payout_paise) VALUES(?,?,?,?,?)').run(click_id, 'pending', txn_id || '', reward, click.upstream_payout_paise || 0);
-      conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
+      await db.prepare('INSERT INTO conversions(click_id,status,txn_id,user_reward_paise,upstream_payout_paise) VALUES(?,?,?,?,?)').run(click_id, 'pending', txn_id || '', reward, click.upstream_payout_paise || 0);
+      conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
     }
     return conv;
   };
@@ -102,43 +103,43 @@ export function applyPostback({ click_id, event = '', status = '', txn_id = '' }
   const st = String(status).toLowerCase();
   let result = 'stage_updated';
   if (st === 'pending') {
-    ensureConv();
+    await ensureConv();
     stage = Math.max(stage, 1);
     if (conv.status === 'approved') return { accepted: true, reason: 'already_approved', idempotent: true };
     if (!conv.pending_credited) {
-      db.prepare('UPDATE users SET pending_paise=pending_paise+? WHERE id=?').run(reward, click.user_id);
-      db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'pending_credit', reward, click_id);
-      db.prepare('UPDATE conversions SET pending_credited=1, status=?, txn_id=?, updated_at=datetime(\'now\') WHERE click_id=?').run('pending', txn_id || conv.txn_id, click_id);
+      await db.prepare('UPDATE users SET pending_paise=pending_paise+? WHERE id=?').run(reward, click.user_id);
+      await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'pending_credit', reward, click_id);
+      await db.prepare('UPDATE conversions SET pending_credited=1, status=?, txn_id=?, updated_at=datetime(\'now\') WHERE click_id=?').run('pending', txn_id || conv.txn_id, click_id);
     } else {
-      db.prepare('UPDATE conversions SET updated_at=datetime(\'now\') WHERE click_id=?').run(click_id);
+      await db.prepare('UPDATE conversions SET updated_at=datetime(\'now\') WHERE click_id=?').run(click_id);
     }
     result = 'pending_credited';
   } else if (st === 'approved') {
-    ensureConv();
+    await ensureConv();
     if (conv.approved_credited) {
       result = 'already_approved_idempotent';
     } else {
       // V2: approval does NOT pay out directly. Money waits in the
       // "Approved — release pending" bucket until the admin releases it.
-      holdApproval(click, conv, reward, { fromPending: !!conv.pending_credited });
-      if (txn_id) db.prepare('UPDATE conversions SET txn_id=? WHERE click_id=?').run(txn_id, click_id);
-      conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
+      await holdApproval(click, conv, reward, { fromPending: !!conv.pending_credited });
+      if (txn_id) await db.prepare('UPDATE conversions SET txn_id=? WHERE click_id=?').run(txn_id, click_id);
+      conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(click_id);
       result = 'approved_pending_release';
     }
     stage = Math.max(stage, 5);
     if (conv.released) stage = 6;
   } else if (st === 'rejected') {
-    ensureConv();
+    await ensureConv();
     if (conv.approved_credited) return { accepted: true, reason: 'already_approved', idempotent: true };
     if (conv.pending_credited) {
-      db.prepare('UPDATE users SET pending_paise=pending_paise-? WHERE id=?').run(reward, click.user_id);
-      db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'rejected_reversal', -reward, click_id);
+      await db.prepare('UPDATE users SET pending_paise=pending_paise-? WHERE id=?').run(reward, click.user_id);
+      await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(click.user_id, 'rejected_reversal', -reward, click_id);
     }
-    db.prepare('UPDATE conversions SET status=\'rejected\', pending_credited=0, updated_at=datetime(\'now\') WHERE click_id=?').run(click_id);
+    await db.prepare('UPDATE conversions SET status=\'rejected\', pending_credited=0, updated_at=datetime(\'now\') WHERE click_id=?').run(click_id);
     result = 'rejected_recorded';
   }
   const convStatus = st === 'pending' || st === 'approved' || st === 'rejected' ? st : (conv ? conv.status : click.conv_status);
-  db.prepare('UPDATE clicks SET stage=?, conv_status=?, updated_at=datetime(\'now\') WHERE click_id=?').run(stage, convStatus, click_id);
+  await db.prepare('UPDATE clicks SET stage=?, conv_status=?, updated_at=datetime(\'now\') WHERE click_id=?').run(stage, convStatus, click_id);
   return { accepted: true, reason: result, stage };
 }
 
@@ -148,22 +149,22 @@ function html(res, code, body, headers = {}) { send(res, code, body, { 'Content-
 function json(res, code, obj, headers = {}) { send(res, code, JSON.stringify(obj), { 'Content-Type': 'application/json', ...headers }); }
 function redirect(res, to, headers = {}) { send(res, 302, '', { Location: to, ...headers }); }
 
-function currentUser(req) {
+async function currentUser(req) {
   const cookies = parseCookies(req);
   if (!cookies.sid) return null;
-  const s = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(sha256(cookies.sid));
+  const s = await db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(sha256(cookies.sid));
   if (!s || s.expires_at < Date.now()) return null;
-  return db.prepare('SELECT * FROM users WHERE id=?').get(s.user_id) || null;
+  return await db.prepare('SELECT * FROM users WHERE id=?').get(s.user_id) || null;
 }
-function startSession(res, userId, remember) {
+async function startSession(res, userId, remember) {
   const token = randomToken(32);
   const days = remember ? 30 : 1;
-  db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(sha256(token), userId, Date.now() + days * 864e5);
+  await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(sha256(token), userId, Date.now() + days * 864e5);
   return cookieHeader('sid', token, remember ? { maxAge: 30 * 86400 } : {});
 }
 
-function layout(user, title, body) {
-  const site = esc(getSetting(db, 'site_name', 'CampaignWala'));
+async function layout(user, title, body) {
+  const site = esc(await getSetting(db, 'site_name', 'CampaignWala'));
   const nav = user
     ? `<span class="who">${esc(user.name)}</span><a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}<form method="post" action="/logout" class="inline"><button class="linkbtn" type="submit">Logout</button></form>`
     : `<a href="/login">Login</a><a class="btn small" href="/signup">Sign up</a>`;
@@ -182,23 +183,23 @@ function timelineHtml(click) {
   }).join('');
   return `<ol class="timeline">${items}</ol>`;
 }
-const publicList = () => db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all().map(publicCampaign);
+const publicList = async () => (await db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all()).map(publicCampaign);
 
 // ---------- server ----------
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
-    const user = currentUser(req);
+    const user = await currentUser(req);
 
     if (p === '/style.css') { return send(res, 200, fs.readFileSync(path.join(ROOT, 'public', 'style.css')), { 'Content-Type': 'text/css' }); }
     if (p === '/app.js') { return send(res, 200, fs.readFileSync(path.join(ROOT, 'public', 'app.js')), { 'Content-Type': 'text/javascript' }); }
     if (p === '/health') return json(res, 200, { ok: true });
 
     // Public API — sanitized shape ONLY (see publicCampaign).
-    if (p === '/api/campaigns' && req.method === 'GET') return json(res, 200, { campaigns: publicList() });
+    if (p === '/api/campaigns' && req.method === 'GET') return json(res, 200, { campaigns: await publicList() });
     if (p.startsWith('/api/campaigns/') && req.method === 'GET') {
-      const c = db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[3]);
+      const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[3]);
       return c ? json(res, 200, publicCampaign(c)) : json(res, 404, { error: 'not_found' });
     }
 
@@ -209,27 +210,28 @@ const server = http.createServer(async (req, res) => {
       const data = { ...q, ...body };
       const provided = req.headers['x-postback-secret'] || data.secret || '';
       const { secret, ...payload } = data;
-      const okSecret = postbackSecret() && safeEqual(provided, postbackSecret());
+      const _pbSecret = await postbackSecret();
+      const okSecret = !!_pbSecret && safeEqual(provided, _pbSecret);
       let result;
       if (!okSecret) result = { accepted: false, reason: 'bad_secret' };
       else if (!data.click_id) result = { accepted: false, reason: 'missing_click_id' };
-      else result = applyPostback(data);
-      db.prepare('INSERT INTO postback_log(ip,click_id,event,status,accepted,reason,payload_json) VALUES(?,?,?,?,?,?,?)')
+      else result = await applyPostback(data);
+      await db.prepare('INSERT INTO postback_log(ip,click_id,event,status,accepted,reason,payload_json) VALUES(?,?,?,?,?,?,?)')
         .run(req.socket.remoteAddress || '', data.click_id || '', data.event || '', data.status || '', result.accepted ? 1 : 0, result.reason, JSON.stringify(payload));
       return json(res, result.accepted ? 200 : 401, result);
     }
 
     if (p === '/' && req.method === 'GET') {
-      const cards = publicList().map(c => `<article class="card camp"><div class="icon">${esc(c.icon_text)}</div>
+      const cards = (await publicList()).map(c => `<article class="card camp"><div class="icon">${esc(c.icon_text)}</div>
         <div class="grow"><h3>${esc(c.title)}</h3><p class="muted">${esc(c.category)} · ${esc(c.geo)}</p><p>${esc(c.description)}</p></div>
         <div class="reward">${esc(rewardLabel(c))}<a class="btn" href="/campaign/${c.id}">View</a></div></article>`).join('');
-      return html(res, 200, layout(user, 'Live Campaigns', `<h1>Live Campaigns</h1><p class="muted">Campaign complete karo, paisa seedha tumhare wallet me. Withdraw UPI, bank ya gift card me.</p>${cards || '<p>No live campaigns right now. Thodi der me dobara check karo.</p>'}`));
+      return html(res, 200, await layout(user, 'Live Campaigns', `<h1>Live Campaigns</h1><p class="muted">Campaign complete karo, paisa seedha tumhare wallet me. Withdraw UPI, bank ya gift card me.</p>${cards || '<p>No live campaigns right now. Thodi der me dobara check karo.</p>'}`));
     }
     if (p.startsWith('/campaign/') && req.method === 'GET') {
-      const c = db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[2]);
-      if (!c) return html(res, 404, layout(user, 'Not found', '<h1>Campaign not found</h1>'));
+      const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[2]);
+      if (!c) return html(res, 404, await layout(user, 'Not found', '<h1>Campaign not found</h1>'));
       const pub = publicCampaign(c);
-      return html(res, 200, layout(user, pub.title, `<article class="card"><div class="icon big">${esc(pub.icon_text)}</div>
+      return html(res, 200, await layout(user, pub.title, `<article class="card"><div class="icon big">${esc(pub.icon_text)}</div>
         <h1>${esc(pub.title)}</h1><p class="muted">${esc(pub.category)} · ${esc(pub.geo)}</p><p>${esc(pub.description)}</p>
         <p class="bigreward">You get: ${esc(rewardLabel(pub))}</p>
         ${pub.reward_mode === 'random' ? '<p class="muted">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}
@@ -242,10 +244,10 @@ const server = http.createServer(async (req, res) => {
     if (p.match(/^\/campaign\/\d+\/start$/) && req.method === 'POST') {
       if (!user) return redirect(res, '/login');
       const id = p.split('/')[2];
-      const c = db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(id);
-      if (!c) return html(res, 404, layout(user, 'Not found', '<h1>Campaign not found</h1>'));
+      const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(id);
+      if (!c) return html(res, 404, await layout(user, 'Not found', '<h1>Campaign not found</h1>'));
       const clickId = 'clk_' + randomToken(10);
-      db.prepare('INSERT INTO clicks(click_id,user_id,campaign_id,stage,ip,ua) VALUES(?,?,?,?,?,?)')
+      await db.prepare('INSERT INTO clicks(click_id,user_id,campaign_id,stage,ip,ua) VALUES(?,?,?,?,?,?)')
         .run(clickId, user.id, c.id, 0, req.socket.remoteAddress || '', req.headers['user-agent'] || '');
       return redirect(res, `/my/campaigns/${clickId}`);
     }
@@ -253,7 +255,7 @@ const server = http.createServer(async (req, res) => {
     // Auth
     if (p === '/signup' && req.method === 'GET') {
       const ref = url.searchParams.get('ref') || parseCookies(req).ref || '';
-      return html(res, 200, layout(null, 'Sign up', `<h1>Create account</h1><form class="card form" method="post" action="/signup">
+      return html(res, 200, await layout(null, 'Sign up', `<h1>Create account</h1><form class="card form" method="post" action="/signup">
         <label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label>
         <label>Phone<input name="phone"></label><label>Password<input name="password" type="password" required minlength="8"></label>
         <label>Referral code (optional)<input name="ref" value="${esc(ref)}"></label>
@@ -262,28 +264,28 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/signup' && req.method === 'POST') {
       const b = await readBody(req);
-      if (!b.name || !b.email || !b.password || String(b.password).length < 8) return html(res, 400, layout(null, 'Sign up', '<p>Details sahi se bharo — password kam se kam 8 characters.</p>'));
-      if (db.prepare('SELECT id FROM users WHERE email=?').get(String(b.email).toLowerCase())) return html(res, 400, layout(null, 'Sign up', '<p>Is email se account pehle se hai. Login karo.</p>'));
-      const referrer = b.ref ? db.prepare('SELECT id FROM users WHERE referral_code=?').get(String(b.ref).trim().toUpperCase()) : null;
-      const info = db.prepare('INSERT INTO users(name,email,phone,pass_hash,referral_code,referred_by) VALUES(?,?,?,?,?,?)')
+      if (!b.name || !b.email || !b.password || String(b.password).length < 8) return html(res, 400, await layout(null, 'Sign up', '<p>Details sahi se bharo — password kam se kam 8 characters.</p>'));
+      if (await db.prepare('SELECT id FROM users WHERE email=?').get(String(b.email).toLowerCase())) return html(res, 400, await layout(null, 'Sign up', '<p>Is email se account pehle se hai. Login karo.</p>'));
+      const referrer = b.ref ? await db.prepare('SELECT id FROM users WHERE referral_code=?').get(String(b.ref).trim().toUpperCase()) : null;
+      const info = await db.prepare('INSERT INTO users(name,email,phone,pass_hash,referral_code,referred_by) VALUES(?,?,?,?,?,?)')
         .run(b.name, String(b.email).toLowerCase(), b.phone || '', hashPassword(b.password), randomCode(8), referrer ? referrer.id : null);
-      const cookie = startSession(res, Number(info.lastInsertRowid), b.remember === '1');
+      const cookie = await startSession(res, Number(info.lastInsertRowid), b.remember === '1');
       return redirect(res, '/my', { 'Set-Cookie': cookie });
     }
-    if (p === '/login' && req.method === 'GET') return html(res, 200, layout(null, 'Login', `<h1>Login</h1><form class="card form" method="post" action="/login">
+    if (p === '/login' && req.method === 'GET') return html(res, 200, await layout(null, 'Login', `<h1>Login</h1><form class="card form" method="post" action="/login">
       <label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label>
       <label class="check"><input type="checkbox" name="remember" value="1"> Remember me for 30 days</label>
       <button class="btn" type="submit">Login</button></form><p class="muted">Naya account? <a href="/signup">Sign up</a></p>`));
     if (p === '/login' && req.method === 'POST') {
       const b = await readBody(req);
-      const u = db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email || '').toLowerCase());
-      if (!u || !verifyPassword(b.password || '', u.pass_hash)) return html(res, 401, layout(null, 'Login', '<p>Email ya password galat hai.</p>'));
-      const cookie = startSession(res, u.id, b.remember === '1');
+      const u = await db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email || '').toLowerCase());
+      if (!u || !verifyPassword(b.password || '', u.pass_hash)) return html(res, 401, await layout(null, 'Login', '<p>Email ya password galat hai.</p>'));
+      const cookie = await startSession(res, u.id, b.remember === '1');
       return redirect(res, '/my', { 'Set-Cookie': cookie });
     }
     if (p === '/logout' && req.method === 'POST') {
       const cookies = parseCookies(req);
-      if (cookies.sid) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(cookies.sid));
+      if (cookies.sid) await db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(cookies.sid));
       return redirect(res, '/', { 'Set-Cookie': cookieHeader('sid', '', { maxAge: 0 }) });
     }
     if (p.startsWith('/r/') && req.method === 'GET') {
@@ -293,22 +295,22 @@ const server = http.createServer(async (req, res) => {
     // User area
     if (p === '/my' && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
-      const mine = db.prepare('SELECT cl.*, c.title FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.user_id=? ORDER BY cl.id DESC').all(user.id);
+      const mine = await db.prepare('SELECT cl.*, c.title FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.user_id=? ORDER BY cl.id DESC').all(user.id);
       const list = mine.map(cl => `<article class="card"><h3>${esc(cl.title)}</h3><p class="muted">Status: ${esc(cl.conv_status)} · Stage: ${esc(STAGES[cl.stage])}</p><a class="btn small" href="/my/campaigns/${esc(cl.click_id)}">Progress dekho</a></article>`).join('');
       const proto = req.headers['x-forwarded-proto'] || 'http';
       const refLink = `${proto}://${req.headers.host}/r/${user.referral_code}`;
-      return html(res, 200, layout(user, 'My Dashboard', `<h1>My Dashboard</h1>
+      return html(res, 200, await layout(user, 'My Dashboard', `<h1>My Dashboard</h1>
         <section class="card"><h2>Wallet</h2><p>Pending: <b>${inr(user.pending_paise)}</b> · Approved (release pending): <b>${inr(user.approved_paise)}</b> · Withdrawable: <b>${inr(user.withdrawable_paise)}</b></p><a class="btn small" href="/wallet">Withdraw karo</a></section>
-        <section class="card"><h2>Refer &amp; Earn</h2><p class="muted">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${esc(getSetting(db, 'referral_percent', '10'))}% commission milega.</p><p class="reflink">${esc(refLink)}</p><p class="muted">Code: ${esc(user.referral_code)}</p></section>
+        <section class="card"><h2>Refer &amp; Earn</h2><p class="muted">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${esc(await getSetting(db, 'referral_percent', '10'))}% commission milega.</p><p class="reflink">${esc(refLink)}</p><p class="muted">Code: ${esc(user.referral_code)}</p></section>
         <h2>My Campaigns</h2>${list || '<p>Abhi koi campaign start nahi kiya.</p>'}`));
     }
     if (p.startsWith('/my/campaigns/') && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
       const clickId = p.split('/')[3];
-      const cl = db.prepare('SELECT cl.*, c.title, c.user_reward_paise, c.campaign_type, c.reward_mode, c.reward_min_paise, c.reward_max_paise, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
-      if (!cl) return html(res, 404, layout(user, 'Not found', '<h1>Not found</h1>'));
-      const conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(clickId);
-      const claim = db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
+      const cl = await db.prepare('SELECT cl.*, c.title, c.user_reward_paise, c.campaign_type, c.reward_mode, c.reward_min_paise, c.reward_max_paise, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
+      if (!cl) return html(res, 404, await layout(user, 'Not found', '<h1>Not found</h1>'));
+      const conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(clickId);
+      const claim = await db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
       const rewardText = cl.campaign_type === 'custom' && claim && claim.status === 'approved'
         ? inr(claim.rolled_reward_paise)
         : esc(rewardLabel(cl));
@@ -336,7 +338,7 @@ const server = http.createServer(async (req, res) => {
             <button class="btn" type="submit">Claim Dobara Submit Karo</button></form>`;
         }
       }
-      return html(res, 200, layout(user, 'Progress', `<article class="card"><h1>${esc(cl.title)}</h1>
+      return html(res, 200, await layout(user, 'Progress', `<article class="card"><h1>${esc(cl.title)}</h1>
         <p class="muted">Reward: ${rewardText} · Status: <span id="convStatus">${esc(cl.conv_status)}</span></p>
         <div id="timeline">${timelineHtml(cl)}</div>${extra}
         <p class="muted">Yeh page har kuch seconds me khud update hota hai. Jo step ho gaya woh ✓, jo baki hai woh number me dikhega.</p></article>
@@ -345,34 +347,34 @@ const server = http.createServer(async (req, res) => {
     if (p.match(/^\/my\/campaigns\/[^/]+\/claim$/) && req.method === 'POST') {
       if (!user) return redirect(res, '/login');
       const clickId = p.split('/')[3];
-      const cl = db.prepare('SELECT cl.*, c.campaign_type FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
-      if (!cl) return html(res, 404, layout(user, 'Not found', '<h1>Not found</h1>'));
-      if (cl.campaign_type !== 'custom') return html(res, 400, layout(user, 'Claim', '<p>Is campaign me claim nahi hota — tracking automatic hai.</p>'));
+      const cl = await db.prepare('SELECT cl.*, c.campaign_type FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
+      if (!cl) return html(res, 404, await layout(user, 'Not found', '<h1>Not found</h1>'));
+      if (cl.campaign_type !== 'custom') return html(res, 400, await layout(user, 'Claim', '<p>Is campaign me claim nahi hota — tracking automatic hai.</p>'));
       const b = await readBody(req);
-      if (!b.note || !String(b.note).trim()) return html(res, 400, layout(user, 'Claim', '<p>Note likhna zaroori hai.</p>'));
-      const existing = db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
+      if (!b.note || !String(b.note).trim()) return html(res, 400, await layout(user, 'Claim', '<p>Note likhna zaroori hai.</p>'));
+      const existing = await db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
       if (existing && existing.status !== 'rejected') return redirect(res, `/my/campaigns/${clickId}`);
-      if (existing) db.prepare('DELETE FROM claims WHERE click_id=?').run(clickId);
-      db.prepare('INSERT INTO claims(click_id,user_id,campaign_id,note,proof_url) VALUES(?,?,?,?,?)')
+      if (existing) await db.prepare('DELETE FROM claims WHERE click_id=?').run(clickId);
+      await db.prepare('INSERT INTO claims(click_id,user_id,campaign_id,note,proof_url) VALUES(?,?,?,?,?)')
         .run(clickId, user.id, cl.campaign_id, String(b.note).trim(), String(b.proof_url || '').trim());
-      db.prepare("UPDATE clicks SET conv_status='claim_submitted', stage=MAX(stage,1), updated_at=datetime('now') WHERE click_id=?").run(clickId);
+      await db.prepare("UPDATE clicks SET conv_status='claim_submitted', stage=MAX(stage,1), updated_at=datetime('now') WHERE click_id=?").run(clickId);
       return redirect(res, `/my/campaigns/${clickId}`);
     }
     if (p.startsWith('/go/') && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
       const clickId = p.split('/')[2];
-      const cl = db.prepare('SELECT cl.*, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
-      if (!cl) return html(res, 404, layout(user, 'Not found', '<h1>Not found</h1>'));
+      const cl = await db.prepare('SELECT cl.*, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
+      if (!cl) return html(res, 404, await layout(user, 'Not found', '<h1>Not found</h1>'));
       if (!cl.link_url) return redirect(res, `/my/campaigns/${clickId}`);
-      db.prepare("UPDATE clicks SET stage=MAX(stage,1), updated_at=datetime('now') WHERE click_id=?").run(clickId);
+      await db.prepare("UPDATE clicks SET stage=MAX(stage,1), updated_at=datetime('now') WHERE click_id=?").run(clickId);
       return redirect(res, cl.link_url.replaceAll('{click_id}', clickId));
     }
     if (p.startsWith('/api/my/progress/') && req.method === 'GET') {
       if (!user) return json(res, 401, { error: 'login_required' });
-      const cl = db.prepare('SELECT * FROM clicks WHERE click_id=? AND user_id=?').get(p.split('/')[4], user.id);
+      const cl = await db.prepare('SELECT * FROM clicks WHERE click_id=? AND user_id=?').get(p.split('/')[4], user.id);
       if (!cl) return json(res, 404, { error: 'not_found' });
-      const conv = db.prepare('SELECT status, expected_credit_date, released FROM conversions WHERE click_id=?').get(cl.click_id);
-      const claim = db.prepare('SELECT status FROM claims WHERE click_id=?').get(cl.click_id);
+      const conv = await db.prepare('SELECT status, expected_credit_date, released FROM conversions WHERE click_id=?').get(cl.click_id);
+      const claim = await db.prepare('SELECT status FROM claims WHERE click_id=?').get(cl.click_id);
       return json(res, 200, {
         click_id: cl.click_id, stage: cl.stage, stage_label: STAGES[cl.stage], conv_status: cl.conv_status, stages: STAGES,
         expected_credit_date: conv ? fmtDate(conv.expected_credit_date) : '', released: conv ? !!conv.released : false,
@@ -381,13 +383,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/wallet' && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
-      const min = Number(getSetting(db, 'min_withdrawal_paise', '5000'));
-      const wds = db.prepare('SELECT * FROM withdrawals WHERE user_id=? ORDER BY id DESC').all(user.id);
-      const ledger = db.prepare('SELECT * FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 20').all(user.id);
-      const approvedList = db.prepare(`SELECT cv.user_reward_paise, cv.expected_credit_date, c.title FROM conversions cv
+      const min = Number(await getSetting(db, 'min_withdrawal_paise', '5000'));
+      const wds = await db.prepare('SELECT * FROM withdrawals WHERE user_id=? ORDER BY id DESC').all(user.id);
+      const ledger = await db.prepare('SELECT * FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 20').all(user.id);
+      const approvedList = await db.prepare(`SELECT cv.user_reward_paise, cv.expected_credit_date, c.title FROM conversions cv
         JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id
         WHERE cl.user_id=? AND cv.status='approved' AND cv.released=0 ORDER BY cv.expected_credit_date`).all(user.id);
-      return html(res, 200, layout(user, 'Wallet', `<h1>Wallet</h1><section class="card">
+      return html(res, 200, await layout(user, 'Wallet', `<h1>Wallet</h1><section class="card">
         <p>Pending balance: <b>${inr(user.pending_paise)}</b> <span class="muted">(partner approval ka wait ho raha hai)</span></p>
         <p>Approved (release pending): <b>${inr(user.approved_paise)}</b> <span class="muted">(approve ho gaya hai — admin expected date par release karega, tab withdrawable hoga)</span></p>
         ${approvedList.map(a => `<p class="muted">• ${esc(a.title)} — ${inr(a.user_reward_paise)} · Expected credit: <b>${esc(fmtDate(a.expected_credit_date))}</b></p>`).join('')}
@@ -403,29 +405,29 @@ const server = http.createServer(async (req, res) => {
       if (!user) return redirect(res, '/login');
       const b = await readBody(req);
       const amount = Math.round(Number(b.amount || 0) * 100);
-      const min = Number(getSetting(db, 'min_withdrawal_paise', '5000'));
-      if (!amount || amount < min) return html(res, 400, layout(user, 'Wallet', `<p>Minimum withdrawal ${inr(min)} hai.</p>`));
-      if (amount > user.withdrawable_paise) return html(res, 400, layout(user, 'Wallet', '<p>Withdrawable balance kam hai.</p>'));
-      if (!b.destination || !['upi', 'bank', 'giftcard'].includes(b.method)) return html(res, 400, layout(user, 'Wallet', '<p>Details sahi se bharo.</p>'));
-      db.prepare('UPDATE users SET withdrawable_paise=withdrawable_paise-? WHERE id=?').run(amount, user.id);
-      const info = db.prepare('INSERT INTO withdrawals(user_id,amount_paise,method,destination) VALUES(?,?,?,?)').run(user.id, amount, b.method, b.destination);
-      db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(user.id, 'withdrawal_hold', -amount, 'wd_' + info.lastInsertRowid);
+      const min = Number(await getSetting(db, 'min_withdrawal_paise', '5000'));
+      if (!amount || amount < min) return html(res, 400, await layout(user, 'Wallet', `<p>Minimum withdrawal ${inr(min)} hai.</p>`));
+      if (amount > user.withdrawable_paise) return html(res, 400, await layout(user, 'Wallet', '<p>Withdrawable balance kam hai.</p>'));
+      if (!b.destination || !['upi', 'bank', 'giftcard'].includes(b.method)) return html(res, 400, await layout(user, 'Wallet', '<p>Details sahi se bharo.</p>'));
+      await db.prepare('UPDATE users SET withdrawable_paise=withdrawable_paise-? WHERE id=?').run(amount, user.id);
+      const info = await db.prepare('INSERT INTO withdrawals(user_id,amount_paise,method,destination) VALUES(?,?,?,?)').run(user.id, amount, b.method, b.destination);
+      await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(user.id, 'withdrawal_hold', -amount, 'wd_' + info.lastInsertRowid);
       return redirect(res, '/wallet');
     }
 
     // Static policy pages
-    if (p === '/privacy') return html(res, 200, layout(user, 'Privacy Policy', POLICY.privacy));
-    if (p === '/terms') return html(res, 200, layout(user, 'Terms', POLICY.terms));
-    if (p === '/refund-policy') return html(res, 200, layout(user, 'Refund & Rejection Policy', POLICY.refund));
+    if (p === '/privacy') return html(res, 200, await layout(user, 'Privacy Policy', POLICY.privacy));
+    if (p === '/terms') return html(res, 200, await layout(user, 'Terms', POLICY.terms));
+    if (p === '/refund-policy') return html(res, 200, await layout(user, 'Refund & Rejection Policy', POLICY.refund));
 
     // Admin
     if (p.startsWith('/admin')) {
       if (!user) return redirect(res, '/login');
-      if (!user.is_admin) return html(res, 403, layout(user, 'Admin', '<h1>Admin access only</h1>'));
+      if (!user.is_admin) return html(res, 403, await layout(user, 'Admin', '<h1>Admin access only</h1>'));
       return await adminRoutes(req, res, p, url, user);
     }
 
-    return html(res, 404, layout(user, 'Not found', '<h1>Page not found</h1>'));
+    return html(res, 404, await layout(user, 'Not found', '<h1>Page not found</h1>'));
   } catch (err) {
     console.error(err);
     return html(res, 500, '<h1>Something went wrong</h1>');
@@ -433,32 +435,33 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function adminRoutes(req, res, p, url, user) {
-  const L = (t, b) => layout(user, t, b);
+  const L = async (t, b) => await layout(user, t, b);
   if (p === '/admin' && req.method === 'GET') {
     const stats = {
-      users: db.prepare('SELECT COUNT(*) n FROM users').get().n,
-      campaigns: db.prepare('SELECT COUNT(*) n FROM campaigns').get().n,
-      conversions: db.prepare('SELECT COUNT(*) n FROM conversions').get().n,
-      pendingWd: db.prepare("SELECT COUNT(*) n FROM withdrawals WHERE status='pending'").get().n,
-      pendingRelease: db.prepare("SELECT COUNT(*) n FROM conversions WHERE status='approved' AND released=0").get().n,
-      pendingClaims: db.prepare("SELECT COUNT(*) n FROM claims WHERE status='pending'").get().n,
+      users: (await db.prepare('SELECT COUNT(*) n FROM users').get()).n,
+      campaigns: (await db.prepare('SELECT COUNT(*) n FROM campaigns').get()).n,
+      conversions: (await db.prepare('SELECT COUNT(*) n FROM conversions').get()).n,
+      pendingWd: (await db.prepare("SELECT COUNT(*) n FROM withdrawals WHERE status='pending'").get()).n,
+      pendingRelease: (await db.prepare("SELECT COUNT(*) n FROM conversions WHERE status='approved' AND released=0").get()).n,
+      pendingClaims: (await db.prepare("SELECT COUNT(*) n FROM claims WHERE status='pending'").get()).n,
     };
-    return html(res, 200, L('Admin', `<h1>Admin Dashboard</h1>
-      <section class="card"><p>Users: <b>${stats.users}</b> · Campaigns: <b>${stats.campaigns}</b> · Conversions: <b>${stats.conversions}</b> · Pending withdrawals: <b>${stats.pendingWd}</b> · Release pending: <b>${stats.pendingRelease}</b> · Claims pending: <b>${stats.pendingClaims}</b></p></section>
+    const lastCleanup = await getSetting(db, 'last_cleanup_at', '');
+    return html(res, 200, await L('Admin', `<h1>Admin Dashboard</h1>
+      <section class="card"><p>Users: <b>${stats.users}</b> · Campaigns: <b>${stats.campaigns}</b> · Conversions: <b>${stats.conversions}</b> · Pending withdrawals: <b>${stats.pendingWd}</b> · Release pending: <b>${stats.pendingRelease}</b> · Claims pending: <b>${stats.pendingClaims}</b></p>${lastCleanup ? `<p class="muted">Last data cleanup (retention: raw 30d · financial 60d after closure): ${esc(lastCleanup)}</p>` : ''}</section>
       <nav class="adminnav"><a class="btn small" href="/admin/campaigns">Campaigns</a><a class="btn small" href="/admin/releases">Releases</a><a class="btn small" href="/admin/claims">Claims</a><a class="btn small" href="/admin/earnings">Earnings</a><a class="btn small" href="/admin/users">Users</a><a class="btn small" href="/admin/conversions">Conversions &amp; Postbacks</a><a class="btn small" href="/admin/withdrawals">Withdrawals</a><a class="btn small" href="/admin/settings">Settings</a></nav>
       <form method="post" action="/admin/import"><button class="btn" type="submit">Import campaigns from ALL feeds now</button></form>
       <form method="post" action="/admin/reconcile"><button class="btn ghost" type="submit">Run reconciliation check</button></form>`));
   }
   if (p === '/admin/import' && req.method === 'POST') {
     const r = await importAllFeeds(db);
-    return html(res, 200, L('Import', `<p>Import result: ${esc(JSON.stringify(r))}</p><p><a href="/admin/campaigns">Campaigns dekho</a></p>`));
+    return html(res, 200, await L('Import', `<p>Import result: ${esc(JSON.stringify(r))}</p><p><a href="/admin/campaigns">Campaigns dekho</a></p>`));
   }
   if (p === '/admin/reconcile' && req.method === 'POST') {
     const r = await reconcilePending(db);
-    return html(res, 200, L('Reconcile', `<p>${esc(JSON.stringify(r))}</p>`));
+    return html(res, 200, await L('Reconcile', `<p>${esc(JSON.stringify(r))}</p>`));
   }
   if (p === '/admin/campaigns' && req.method === 'GET') {
-    const all = db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
+    const all = await db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
     const cards = all.map(c => {
       // ADMIN-ONLY money line: company payout / user reward / margin.
       // upstream_payout_paise is server-only data — it is rendered ONLY here,
@@ -472,7 +475,7 @@ async function adminRoutes(req, res, p, url, user) {
       <p><a class="btn small" href="/admin/campaigns/${c.id}/edit">Edit</a></p>
       <form method="post" action="/admin/campaigns/${c.id}/toggle"><button class="btn small ghost" type="submit">${c.is_live ? 'Turn OFF' : 'Turn LIVE'}</button></form></article>`;
     }).join('');
-    return html(res, 200, L('Campaigns', `<h1>Campaigns</h1><p><a class="btn" href="/admin/campaigns/new">+ New Campaign</a></p>${cards}`));
+    return html(res, 200, await L('Campaigns', `<h1>Campaigns</h1><p><a class="btn" href="/admin/campaigns/new">+ New Campaign</a></p>${cards}`));
   }
   const campForm = (c = {}) => `<form class="card form" method="post" action="${c.id ? `/admin/campaigns/${c.id}/edit` : '/admin/campaigns/new'}">
     <label>Title<input name="title" required value="${esc(c.title || '')}"></label>
@@ -497,7 +500,7 @@ async function adminRoutes(req, res, p, url, user) {
     <label>Rules<textarea name="rules_text">${esc(c.rules_text || '')}</textarea></label>
     <label class="check"><input type="checkbox" name="is_live" value="1" ${c.is_live === undefined || c.is_live ? 'checked' : ''}> Live</label>
     <button class="btn" type="submit">Save</button></form>`;
-  const campFields = (b, existing = null) => {
+  const campFields = async (b, existing = null) => {
     const type = b.campaign_type === 'custom' ? 'custom' : 'network';
     const mode = b.reward_mode === 'random' ? 'random' : 'fixed';
     const upstream = existing && (b.upstream_payout === '' || b.upstream_payout == null)
@@ -506,7 +509,7 @@ async function adminRoutes(req, res, p, url, user) {
     let override = b.reward_lock === '1' ? 1 : 0;
     // Auto pricing on manual save too (unless locked): reward follows upstream × share.
     if (!override && upstream > 0 && type === 'network') {
-      reward = Math.floor(upstream * (Number(getSetting(db, 'user_share_percent', '87.5')) || 0) / 100);
+      reward = Math.floor(upstream * (Number(await getSetting(db, 'user_share_percent', '87.5')) || 0) / 100);
     }
     if (mode === 'random' && !reward) reward = Math.round(Number(b.reward_min || 0) * 100);
     return {
@@ -518,60 +521,60 @@ async function adminRoutes(req, res, p, url, user) {
       steps: JSON.stringify(parseSteps(b.steps)), rules: b.rules_text || '', live: b.is_live === '1' ? 1 : 0,
     };
   };
-  if (p === '/admin/campaigns/new' && req.method === 'GET') return html(res, 200, L('New Campaign', `<h1>New Campaign</h1>${campForm()}`));
+  if (p === '/admin/campaigns/new' && req.method === 'GET') return html(res, 200, await L('New Campaign', `<h1>New Campaign</h1>${campForm()}`));
   if (p === '/admin/campaigns/new' && req.method === 'POST') {
     const b = await readBody(req);
-    const f = campFields(b);
-    db.prepare(`INSERT INTO campaigns(title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,steps_json,rules_text,campaign_type,reward_mode,reward_min_paise,reward_max_paise,reward_override,link_url,credit_days,source,external_id,is_live)
+    const f = await campFields(b);
+    await db.prepare(`INSERT INTO campaigns(title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,steps_json,rules_text,campaign_type,reward_mode,reward_min_paise,reward_max_paise,reward_override,link_url,credit_days,source,external_id,is_live)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'manual',?,?)`)
       .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, 'manual-' + Date.now(), f.live);
     return redirect(res, '/admin/campaigns');
   }
   const editMatch = p.match(/^\/admin\/campaigns\/(\d+)\/edit$/);
   if (editMatch && req.method === 'GET') {
-    const c = db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
-    return c ? html(res, 200, L('Edit Campaign', `<h1>Edit Campaign</h1>${campForm(c)}`)) : html(res, 404, L('404', '<h1>Not found</h1>'));
+    const c = await db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
+    return c ? html(res, 200, await L('Edit Campaign', `<h1>Edit Campaign</h1>${campForm(c)}`)) : html(res, 404, await L('404', '<h1>Not found</h1>'));
   }
   if (editMatch && req.method === 'POST') {
     const b = await readBody(req);
-    const c = db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
-    const f = campFields(b, c);
-    db.prepare(`UPDATE campaigns SET title=?,description=?,category=?,geo=?,icon_text=?,user_reward_paise=?,upstream_payout_paise=?,steps_json=?,rules_text=?,
+    const c = await db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
+    const f = await campFields(b, c);
+    await db.prepare(`UPDATE campaigns SET title=?,description=?,category=?,geo=?,icon_text=?,user_reward_paise=?,upstream_payout_paise=?,steps_json=?,rules_text=?,
       campaign_type=?,reward_mode=?,reward_min_paise=?,reward_max_paise=?,reward_override=?,link_url=?,credit_days=?,is_live=? WHERE id=?`)
       .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, f.live, c.id);
     return redirect(res, '/admin/campaigns');
   }
   const toggleMatch = p.match(/^\/admin\/campaigns\/(\d+)\/toggle$/);
   if (toggleMatch && req.method === 'POST') {
-    db.prepare('UPDATE campaigns SET is_live = 1 - is_live WHERE id=?').run(toggleMatch[1]);
+    await db.prepare('UPDATE campaigns SET is_live = 1 - is_live WHERE id=?').run(toggleMatch[1]);
     return redirect(res, '/admin/campaigns');
   }
   if (p === '/admin/users' && req.method === 'GET') {
-    const users = db.prepare('SELECT * FROM users ORDER BY id DESC').all();
-    return html(res, 200, L('Users', `<h1>Users</h1>${users.map(u => `<article class="card"><h3>${esc(u.name)}</h3><p class="muted">${esc(u.email)} · ${esc(u.phone || '')}</p><p>Pending ${inr(u.pending_paise)} · Approved (release pending) ${inr(u.approved_paise)} · Withdrawable ${inr(u.withdrawable_paise)} · Ref code ${esc(u.referral_code)}${u.is_admin ? ' · ADMIN' : ''}</p></article>`).join('')}`));
+    const users = await db.prepare('SELECT * FROM users ORDER BY id DESC').all();
+    return html(res, 200, await L('Users', `<h1>Users</h1>${users.map(u => `<article class="card"><h3>${esc(u.name)}</h3><p class="muted">${esc(u.email)} · ${esc(u.phone || '')}</p><p>Pending ${inr(u.pending_paise)} · Approved (release pending) ${inr(u.approved_paise)} · Withdrawable ${inr(u.withdrawable_paise)} · Ref code ${esc(u.referral_code)}${u.is_admin ? ' · ADMIN' : ''}</p></article>`).join('')}`));
   }
   if (p === '/admin/conversions' && req.method === 'GET') {
-    const convs = db.prepare('SELECT cv.*, c.title FROM conversions cv JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id ORDER BY cv.id DESC LIMIT 50').all();
-    const logs = db.prepare('SELECT * FROM postback_log ORDER BY id DESC LIMIT 50').all();
-    return html(res, 200, L('Conversions', `<h1>Conversions</h1>${convs.map(cv => `<article class="card"><b>${esc(cv.title)}</b><p class="muted">${esc(cv.click_id)} · ${esc(cv.status)}${cv.status === 'approved' ? (cv.released ? ' · RELEASED' : ` · release pending (expected ${esc(fmtDate(cv.expected_credit_date))})`) : ''} · User reward ${inr(cv.user_reward_paise)}</p></article>`).join('') || '<p>None yet.</p>'}
+    const convs = await db.prepare('SELECT cv.*, c.title FROM conversions cv JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id ORDER BY cv.id DESC LIMIT 50').all();
+    const logs = await db.prepare('SELECT * FROM postback_log ORDER BY id DESC LIMIT 50').all();
+    return html(res, 200, await L('Conversions', `<h1>Conversions</h1>${convs.map(cv => `<article class="card"><b>${esc(cv.title)}</b><p class="muted">${esc(cv.click_id)} · ${esc(cv.status)}${cv.status === 'approved' ? (cv.released ? ' · RELEASED' : ` · release pending (expected ${esc(fmtDate(cv.expected_credit_date))})`) : ''} · User reward ${inr(cv.user_reward_paise)}</p></article>`).join('') || '<p>None yet.</p>'}
       <h1>Postback Log</h1>${logs.map(l => `<article class="card"><p class="muted">#${l.id} · ${esc(l.received_at)} · ${esc(l.click_id)} · event=${esc(l.event)} status=${esc(l.status)} · ${l.accepted ? 'ACCEPTED' : 'REJECTED'} (${esc(l.reason)})</p></article>`).join('') || '<p>No postbacks yet.</p>'}`));
   }
   if (p === '/admin/withdrawals' && req.method === 'GET') {
-    const wds = db.prepare('SELECT w.*, u.name, u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC').all();
-    return html(res, 200, L('Withdrawals', `<h1>Withdrawals</h1>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)}<p class="muted">${esc(w.name)} (${esc(w.email)}) · ${esc(w.destination)} · Status: ${esc(w.status)}</p>
+    const wds = await db.prepare('SELECT w.*, u.name, u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC').all();
+    return html(res, 200, await L('Withdrawals', `<h1>Withdrawals</h1>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)}<p class="muted">${esc(w.name)} (${esc(w.email)}) · ${esc(w.destination)} · Status: ${esc(w.status)}</p>
       ${w.status === 'pending' ? `<form method="post" action="/admin/withdrawals/${w.id}/approve" class="inline"><button class="btn small" type="submit">Approve &amp; Paid</button></form>
       <form method="post" action="/admin/withdrawals/${w.id}/reject" class="inline"><button class="btn small ghost" type="submit">Reject (refund)</button></form>` : ''}</article>`).join('') || '<p>None.</p>'}`));
   }
   const wdMatch = p.match(/^\/admin\/withdrawals\/(\d+)\/(approve|reject)$/);
   if (wdMatch && req.method === 'POST') {
-    const w = db.prepare('SELECT * FROM withdrawals WHERE id=? AND status=\'pending\'').get(wdMatch[1]);
+    const w = await db.prepare('SELECT * FROM withdrawals WHERE id=? AND status=\'pending\'').get(wdMatch[1]);
     if (w) {
       if (wdMatch[2] === 'approve') {
-        db.prepare('UPDATE withdrawals SET status=\'paid\', processed_at=datetime(\'now\') WHERE id=?').run(w.id);
+        await db.prepare('UPDATE withdrawals SET status=\'paid\', processed_at=datetime(\'now\') WHERE id=?').run(w.id);
       } else {
-        db.prepare('UPDATE withdrawals SET status=\'rejected\', processed_at=datetime(\'now\') WHERE id=?').run(w.id);
-        db.prepare('UPDATE users SET withdrawable_paise=withdrawable_paise+? WHERE id=?').run(w.amount_paise, w.user_id);
-        db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(w.user_id, 'withdrawal_refund', w.amount_paise, 'wd_' + w.id);
+        await db.prepare('UPDATE withdrawals SET status=\'rejected\', processed_at=datetime(\'now\') WHERE id=?').run(w.id);
+        await db.prepare('UPDATE users SET withdrawable_paise=withdrawable_paise+? WHERE id=?').run(w.amount_paise, w.user_id);
+        await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(w.user_id, 'withdrawal_refund', w.amount_paise, 'wd_' + w.id);
       }
     }
     return redirect(res, '/admin/withdrawals');
@@ -579,7 +582,7 @@ async function adminRoutes(req, res, p, url, user) {
   // ---- Releases: approved money waits here until the admin releases it ----
   if (p === '/admin/releases' && req.method === 'GET') {
     const today = new Date().toISOString().slice(0, 10);
-    const rows = db.prepare(`SELECT cv.*, cl.user_id, c.title, u.name, u.email FROM conversions cv
+    const rows = await db.prepare(`SELECT cv.*, cl.user_id, c.title, u.name, u.email FROM conversions cv
       JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id JOIN users u ON u.id=cl.user_id
       WHERE cv.status='approved' AND cv.released=0 ORDER BY cv.expected_credit_date ASC`).all();
     const cards = rows.map(cv => {
@@ -588,27 +591,27 @@ async function adminRoutes(req, res, p, url, user) {
       <p class="muted">${esc(cv.name)} (${esc(cv.email)}) · Approved: ${esc((cv.approved_at || '').slice(0, 10))} · Expected credit: <b>${esc(fmtDate(cv.expected_credit_date))}</b>${cv.referral_amount_paise ? ` · Referral held: ${inr(cv.referral_amount_paise)}` : ''}</p>
       <form method="post" action="/admin/releases/${esc(cv.click_id)}"><button class="btn small" type="submit">Release to Wallet</button></form></article>`;
     }).join('');
-    return html(res, 200, L('Releases', `<h1>Releases (Approved — release pending)</h1>
+    return html(res, 200, await L('Releases', `<h1>Releases (Approved — release pending)</h1>
       <form method="post" action="/admin/releases/bulk-due"><button class="btn" type="submit">Release ALL due (date aa gayi hai)</button></form>
       <p class="muted">Release karte hi paisa user ke Withdrawable wallet me jayega aur referral commission bhi referrer ko mil jayega.</p>${cards || '<p>Abhi kuch release pending nahi.</p>'}`));
   }
   if (p === '/admin/releases/bulk-due' && req.method === 'POST') {
     const today = new Date().toISOString().slice(0, 10);
-    const rows = db.prepare("SELECT click_id FROM conversions WHERE status='approved' AND released=0 AND expected_credit_date<=?").all(today);
+    const rows = await db.prepare("SELECT click_id FROM conversions WHERE status='approved' AND released=0 AND expected_credit_date<=?").all(today);
     let n = 0;
-    for (const r of rows) if (releaseConversion(r.click_id).ok) n++;
-    return html(res, 200, L('Releases', `<p>${n} conversion(s) release ho gaye.</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
+    for (const r of rows) if ((await releaseConversion(r.click_id)).ok) n++;
+    return html(res, 200, await L('Releases', `<p>${n} conversion(s) release ho gaye.</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
   }
   const relMatch = p.match(/^\/admin\/releases\/([\w-]+)$/);
   if (relMatch && req.method === 'POST') {
-    const r = releaseConversion(relMatch[1]);
-    return html(res, 200, L('Releases', `<p>Release result: ${esc(r.reason)}</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
+    const r = await releaseConversion(relMatch[1]);
+    return html(res, 200, await L('Releases', `<p>Release result: ${esc(r.reason)}</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
   }
   // ---- Claims (custom / manual-verification campaigns) ----
   if (p === '/admin/claims' && req.method === 'GET') {
-    const claims = db.prepare(`SELECT cq.*, c.title, u.name, u.email FROM claims cq
+    const claims = await db.prepare(`SELECT cq.*, c.title, u.name, u.email FROM claims cq
       JOIN campaigns c ON c.id=cq.campaign_id JOIN users u ON u.id=cq.user_id ORDER BY cq.id DESC LIMIT 100`).all();
-    return html(res, 200, L('Claims', `<h1>Claims (Custom Campaigns)</h1>${claims.map(cq => `<article class="card"><b>${esc(cq.title)}</b> · Status: ${esc(cq.status)}${cq.status === 'approved' ? ` · Reward: ${inr(cq.rolled_reward_paise)}` : ''}
+    return html(res, 200, await L('Claims', `<h1>Claims (Custom Campaigns)</h1>${claims.map(cq => `<article class="card"><b>${esc(cq.title)}</b> · Status: ${esc(cq.status)}${cq.status === 'approved' ? ` · Reward: ${inr(cq.rolled_reward_paise)}` : ''}
       <p class="muted">${esc(cq.name)} (${esc(cq.email)}) · ${esc(cq.created_at)}</p>
       <p>Note: ${esc(cq.note)}</p>${cq.proof_url ? `<p>Proof: <a href="${esc(cq.proof_url)}" target="_blank" rel="noopener">${esc(cq.proof_url)}</a></p>` : ''}
       ${cq.status === 'rejected' ? `<p class="muted">Reject reason: ${esc(cq.reject_reason)}</p>` : ''}
@@ -617,14 +620,14 @@ async function adminRoutes(req, res, p, url, user) {
   }
   const claimMatch = p.match(/^\/admin\/claims\/(\d+)\/(approve|reject)$/);
   if (claimMatch && req.method === 'POST') {
-    const claim = db.prepare("SELECT * FROM claims WHERE id=? AND status='pending'").get(claimMatch[1]);
+    const claim = await db.prepare("SELECT * FROM claims WHERE id=? AND status='pending'").get(claimMatch[1]);
     if (claim) {
       const b = await readBody(req);
       if (claimMatch[2] === 'reject') {
-        db.prepare("UPDATE claims SET status='rejected', reject_reason=?, processed_at=datetime('now') WHERE id=?").run(String(b.reason || 'Verification fail ho gaya'), claim.id);
-        db.prepare("UPDATE clicks SET conv_status='claim_rejected', updated_at=datetime('now') WHERE click_id=?").run(claim.click_id);
+        await db.prepare("UPDATE claims SET status='rejected', reject_reason=?, processed_at=datetime('now') WHERE id=?").run(String(b.reason || 'Verification fail ho gaya'), claim.id);
+        await db.prepare("UPDATE clicks SET conv_status='claim_rejected', updated_at=datetime('now') WHERE click_id=?").run(claim.click_id);
       } else {
-        const camp = db.prepare('SELECT * FROM campaigns WHERE id=?').get(claim.campaign_id);
+        const camp = await db.prepare('SELECT * FROM campaigns WHERE id=?').get(claim.campaign_id);
         let amount = camp.user_reward_paise;
         if (camp.reward_mode === 'random') {
           const min = camp.reward_min_paise, max = Math.max(min, camp.reward_max_paise);
@@ -632,37 +635,37 @@ async function adminRoutes(req, res, p, url, user) {
             ? (min / 100 + Math.floor(Math.random() * (max / 100 - min / 100 + 1))) * 100
             : min + Math.floor(Math.random() * (max - min + 1));
         }
-        const click = db.prepare('SELECT cl.*, u.referred_by FROM clicks cl JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(claim.click_id);
+        const click = await db.prepare('SELECT cl.*, u.referred_by FROM clicks cl JOIN users u ON u.id=cl.user_id WHERE cl.click_id=?').get(claim.click_id);
         click.credit_days = camp.credit_days;
-        let conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(claim.click_id);
+        let conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(claim.click_id);
         if (!conv) {
-          db.prepare('INSERT INTO conversions(click_id,status,txn_id,user_reward_paise,upstream_payout_paise) VALUES(?,?,?,?,?)')
+          await db.prepare('INSERT INTO conversions(click_id,status,txn_id,user_reward_paise,upstream_payout_paise) VALUES(?,?,?,?,?)')
             .run(claim.click_id, 'pending', '', amount, camp.upstream_payout_paise || 0);
-          conv = db.prepare('SELECT * FROM conversions WHERE click_id=?').get(claim.click_id);
+          conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(claim.click_id);
         }
-        if (!conv.approved_credited) holdApproval(click, conv, amount, { fromPending: !!conv.pending_credited });
-        db.prepare("UPDATE claims SET status='approved', rolled_reward_paise=?, processed_at=datetime('now') WHERE id=?").run(amount, claim.id);
-        db.prepare("UPDATE clicks SET stage=MAX(stage,5), conv_status='approved', updated_at=datetime('now') WHERE click_id=?").run(claim.click_id);
+        if (!conv.approved_credited) await holdApproval(click, conv, amount, { fromPending: !!conv.pending_credited });
+        await db.prepare("UPDATE claims SET status='approved', rolled_reward_paise=?, processed_at=datetime('now') WHERE id=?").run(amount, claim.id);
+        await db.prepare("UPDATE clicks SET stage=MAX(stage,5), conv_status='approved', updated_at=datetime('now') WHERE click_id=?").run(claim.click_id);
       }
     }
     return redirect(res, '/admin/claims');
   }
   // ---- Earnings (ADMIN ONLY — upstream payout & margin kabhi public nahi) ----
   if (p === '/admin/earnings' && req.method === 'GET') {
-    const sum = (sql) => db.prepare(sql).get().v || 0;
+    const sum = async (sql) => ((await db.prepare(sql).get())?.v) || 0;
     const e = {
-      upstreamApproved: sum("SELECT COALESCE(SUM(upstream_payout_paise),0) v FROM conversions WHERE status='approved'"),
-      rewardsReleased: sum("SELECT COALESCE(SUM(user_reward_paise),0) v FROM conversions WHERE status='approved' AND released=1"),
-      rewardsPending: sum("SELECT COALESCE(SUM(user_reward_paise),0) v FROM conversions WHERE status='approved' AND released=0"),
-      referralPaid: sum("SELECT COALESCE(SUM(referral_amount_paise),0) v FROM conversions WHERE status='approved' AND referral_released=1"),
-      referralPending: sum("SELECT COALESCE(SUM(referral_amount_paise),0) v FROM conversions WHERE status='approved' AND referral_released=0"),
-      approvedCount: sum("SELECT COUNT(*) v FROM conversions WHERE status='approved'"),
+      upstreamApproved: await sum("SELECT COALESCE(SUM(upstream_payout_paise),0) v FROM conversions WHERE status='approved'"),
+      rewardsReleased: await sum("SELECT COALESCE(SUM(user_reward_paise),0) v FROM conversions WHERE status='approved' AND released=1"),
+      rewardsPending: await sum("SELECT COALESCE(SUM(user_reward_paise),0) v FROM conversions WHERE status='approved' AND released=0"),
+      referralPaid: await sum("SELECT COALESCE(SUM(referral_amount_paise),0) v FROM conversions WHERE status='approved' AND referral_released=1"),
+      referralPending: await sum("SELECT COALESCE(SUM(referral_amount_paise),0) v FROM conversions WHERE status='approved' AND referral_released=0"),
+      approvedCount: await sum("SELECT COUNT(*) v FROM conversions WHERE status='approved'"),
     };
     e.rewardsApproved = e.rewardsReleased + e.rewardsPending;
     e.referralTotal = e.referralPaid + e.referralPending;
     e.marginApproved = e.upstreamApproved - e.rewardsApproved - e.referralTotal;
-    e.marginReleased = sum("SELECT COALESCE(SUM(upstream_payout_paise),0) v FROM conversions WHERE status='approved' AND released=1") - e.rewardsReleased - e.referralPaid;
-    return html(res, 200, L('Earnings', `<h1>Earnings (sirf admin)</h1><section class="card">
+    e.marginReleased = await sum("SELECT COALESCE(SUM(upstream_payout_paise),0) v FROM conversions WHERE status='approved' AND released=1") - e.rewardsReleased - e.referralPaid;
+    return html(res, 200, await L('Earnings', `<h1>Earnings (sirf admin)</h1><section class="card">
       <p>Approved conversions: <b>${e.approvedCount}</b></p>
       <p>Total upstream payout (approved): <b>${inr(e.upstreamApproved)}</b></p>
       <p>User rewards — released: <b>${inr(e.rewardsReleased)}</b> · release pending: <b>${inr(e.rewardsPending)}</b></p>
@@ -672,18 +675,18 @@ async function adminRoutes(req, res, p, url, user) {
       <p class="muted">Note: upstream payout network se tabhi final hota hai jab network khud pay kare — yeh numbers approved conversions par based hain.</p></section>`));
   }
   if (p === '/admin/settings' && req.method === 'GET') {
-    const feeds = getFeeds(db);
+    const feeds = await getFeeds(db);
     const feedCards = feeds.map((f, i) => `<article class="card"><b>${esc(f.name || 'Feed ' + (i + 1))}</b> · ${f.enabled === false ? 'OFF' : 'ON'}
       <p class="muted">URL saved (server only, hidden) · Token: ${f.token ? 'set (hidden)' : 'not set'}</p>
       <form method="post" action="/admin/feeds/${i}/toggle" class="inline"><button class="btn small ghost" type="submit">${f.enabled === false ? 'Enable' : 'Disable'}</button></form>
       <form method="post" action="/admin/feeds/${i}/delete" class="inline"><button class="btn small ghost" type="submit">Delete feed</button></form></article>`).join('');
-    return html(res, 200, L('Settings', `<h1>Settings</h1><form class="card form" method="post" action="/admin/settings">
-      <label>Site name<input name="site_name" value="${esc(getSetting(db, 'site_name', 'CampaignWala'))}"></label>
-      <label>Referral commission %<input name="referral_percent" type="number" step="0.1" value="${esc(getSetting(db, 'referral_percent', '10'))}"></label>
-      <label>Minimum withdrawal (₹)<input name="min_withdrawal" type="number" step="0.01" value="${Number(getSetting(db, 'min_withdrawal_paise', '5000')) / 100}"></label>
-      <label>User share % — feed import par user reward = upstream payout ka itna % (baaki admin margin, server only)<input name="user_share_percent" type="number" step="0.1" min="1" max="100" value="${esc(getSetting(db, 'user_share_percent', '87.5'))}"></label>
-      <label>Credit days — approval ke kitne din baad expected wallet credit date (admin release usi ke aas-paas karega)<input name="credit_days" type="number" min="0" value="${esc(getSetting(db, 'credit_days', '7'))}"></label>
-      <label>Postback secret (server only)<input name="postback_secret" value="" placeholder="${postbackSecret() ? 'set (hidden) — blank = no change' : 'not set'}"></label>
+    return html(res, 200, await L('Settings', `<h1>Settings</h1><form class="card form" method="post" action="/admin/settings">
+      <label>Site name<input name="site_name" value="${esc(await getSetting(db, 'site_name', 'CampaignWala'))}"></label>
+      <label>Referral commission %<input name="referral_percent" type="number" step="0.1" value="${esc(await getSetting(db, 'referral_percent', '10'))}"></label>
+      <label>Minimum withdrawal (₹)<input name="min_withdrawal" type="number" step="0.01" value="${Number(await getSetting(db, 'min_withdrawal_paise', '5000')) / 100}"></label>
+      <label>User share % — feed import par user reward = upstream payout ka itna % (baaki admin margin, server only)<input name="user_share_percent" type="number" step="0.1" min="1" max="100" value="${esc(await getSetting(db, 'user_share_percent', '87.5'))}"></label>
+      <label>Credit days — approval ke kitne din baad expected wallet credit date (admin release usi ke aas-paas karega)<input name="credit_days" type="number" min="0" value="${esc(await getSetting(db, 'credit_days', '7'))}"></label>
+      <label>Postback secret (server only)<input name="postback_secret" value="" placeholder="${(await postbackSecret()) ? 'set (hidden) — blank = no change' : 'not set'}"></label>
       <button class="btn" type="submit">Save Settings</button></form>
       <h2>Campaign Feeds (multi-network, server only)</h2>${feedCards || '<p class="muted">Abhi koi feed nahi hai.</p>'}
       <form class="card form" method="post" action="/admin/feeds/add">
@@ -695,37 +698,37 @@ async function adminRoutes(req, res, p, url, user) {
   }
   if (p === '/admin/settings' && req.method === 'POST') {
     const b = await readBody(req);
-    if (b.site_name) setSetting(db, 'site_name', b.site_name);
-    if (b.referral_percent !== undefined) setSetting(db, 'referral_percent', b.referral_percent);
-    if (b.min_withdrawal !== undefined) setSetting(db, 'min_withdrawal_paise', String(Math.round(Number(b.min_withdrawal) * 100)));
-    if (b.user_share_percent !== undefined && b.user_share_percent !== '') setSetting(db, 'user_share_percent', b.user_share_percent);
-    if (b.credit_days !== undefined && b.credit_days !== '') setSetting(db, 'credit_days', b.credit_days);
-    if (b.feed_url) setSetting(db, 'feed_url', b.feed_url);
-    if (b.feed_token) setSetting(db, 'feed_token', b.feed_token);
-    if (b.postback_secret) setSetting(db, 'postback_secret', b.postback_secret);
+    if (b.site_name) await setSetting(db, 'site_name', b.site_name);
+    if (b.referral_percent !== undefined) await setSetting(db, 'referral_percent', b.referral_percent);
+    if (b.min_withdrawal !== undefined) await setSetting(db, 'min_withdrawal_paise', String(Math.round(Number(b.min_withdrawal) * 100)));
+    if (b.user_share_percent !== undefined && b.user_share_percent !== '') await setSetting(db, 'user_share_percent', b.user_share_percent);
+    if (b.credit_days !== undefined && b.credit_days !== '') await setSetting(db, 'credit_days', b.credit_days);
+    if (b.feed_url) await setSetting(db, 'feed_url', b.feed_url);
+    if (b.feed_token) await setSetting(db, 'feed_token', b.feed_token);
+    if (b.postback_secret) await setSetting(db, 'postback_secret', b.postback_secret);
     return redirect(res, '/admin/settings');
   }
   if (p === '/admin/feeds/add' && req.method === 'POST') {
     const b = await readBody(req);
     if (b.name && b.url) {
-      const feeds = getFeeds(db);
+      const feeds = await getFeeds(db);
       feeds.push({ name: String(b.name).trim(), url: String(b.url).trim(), token: String(b.token || ''), enabled: true });
-      saveFeeds(db, feeds);
+      await saveFeeds(db, feeds);
     }
     return redirect(res, '/admin/settings');
   }
   const feedMatch = p.match(/^\/admin\/feeds\/(\d+)\/(toggle|delete)$/);
   if (feedMatch && req.method === 'POST') {
-    const feeds = getFeeds(db);
+    const feeds = await getFeeds(db);
     const i = Number(feedMatch[1]);
     if (feeds[i]) {
       if (feedMatch[2] === 'toggle') feeds[i].enabled = feeds[i].enabled === false ? true : false;
       else feeds.splice(i, 1);
-      saveFeeds(db, feeds);
+      await saveFeeds(db, feeds);
     }
     return redirect(res, '/admin/settings');
   }
-  return html(res, 404, L('404', '<h1>Not found</h1>'));
+  return html(res, 404, await L('404', '<h1>Not found</h1>'));
 }
 
 const POLICY = {
@@ -735,6 +738,14 @@ const POLICY = {
 };
 
 if (process.env.NODE_ENV !== 'test') {
-  server.listen(PORT, () => console.log(`Campaign website listening on :${PORT} (db: ${DB_PATH})`));
+  server.listen(PORT, () => console.log(`Campaign website listening on :${PORT} (db: ${db.mode}${db.mode === 'pg' ? ', schema: campaign' : ': ' + DB_PATH})`));
+  // Retention: once on boot, then daily. Raw tracking data purges at 30 days;
+  // financial records only 60 days after their case fully closes, and never
+  // while the account holds a balance or an open state (see src/retention.js).
+  const cleanup = () => runRetention(db)
+    .then(r => console.log('[retention]', JSON.stringify(r)))
+    .catch(e => console.error('[retention]', e.message));
+  cleanup();
+  setInterval(cleanup, 24 * 3600 * 1000).unref();
 }
 export { server, db };

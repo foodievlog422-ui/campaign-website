@@ -2,8 +2,9 @@
 FROM node:24-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json ./
-# No external dependencies — nothing to install.
+COPY package.json package-lock.json ./
+# One dependency: pg (pure JS, same install on amd64 and arm64).
+RUN npm ci --omit=dev
 COPY src ./src
 COPY public ./public
 RUN mkdir -p /app/data && chown -R node:node /app

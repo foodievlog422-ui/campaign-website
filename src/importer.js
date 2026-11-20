@@ -22,21 +22,21 @@ export function feedSource(feed, idx) {
 
 // Reads the configured feed list. Migrates the legacy single feed_url /
 // feed_token settings (or env vars) into the list on first use.
-export function getFeeds(db) {
+export async function getFeeds(db) {
   let feeds = [];
-  try { feeds = JSON.parse(getSetting(db, 'feeds_json', '') || '[]'); } catch { feeds = []; }
+  try { feeds = JSON.parse(await getSetting(db, 'feeds_json', '') || '[]'); } catch { feeds = []; }
   if (!Array.isArray(feeds)) feeds = [];
   if (feeds.length === 0) {
-    const url = getSetting(db, 'feed_url', process.env.NETWORK_FEED_URL || '');
+    const url = await getSetting(db, 'feed_url', process.env.NETWORK_FEED_URL || '');
     if (url) {
-      feeds = [{ name: 'Default feed', url, token: getSetting(db, 'feed_token', process.env.NETWORK_FEED_TOKEN || ''), enabled: true }];
-      setSetting(db, 'feeds_json', JSON.stringify(feeds));
+      feeds = [{ name: 'Default feed', url, token: await getSetting(db, 'feed_token', process.env.NETWORK_FEED_TOKEN || ''), enabled: true }];
+      await setSetting(db, 'feeds_json', JSON.stringify(feeds));
     }
   }
   return feeds;
 }
-export function saveFeeds(db, feeds) {
-  setSetting(db, 'feeds_json', JSON.stringify(feeds));
+export async function saveFeeds(db, feeds) {
+  await setSetting(db, 'feeds_json', JSON.stringify(feeds));
 }
 
 export async function importFeed(db, feed, idx = 0, fetchFn = fetch) {
@@ -49,16 +49,16 @@ export async function importFeed(db, feed, idx = 0, fetchFn = fetch) {
   const data = await res.json();
   const items = Array.isArray(data) ? data : (data.campaigns || []);
   const source = feedSource(feed, idx);
-  const share = Number(getSetting(db, 'user_share_percent', '87.5')) || 0;
-  const upsert = db.prepare(`INSERT INTO campaigns
+  const share = Number(await getSetting(db, 'user_share_percent', '87.5')) || 0;
+  const upsert = await db.prepare(`INSERT INTO campaigns
     (title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,steps_json,rules_text,source,external_id,is_live)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,1)
     ON CONFLICT(source,external_id) DO UPDATE SET
       title=excluded.title, description=excluded.description, category=excluded.category,
       geo=excluded.geo, steps_json=excluded.steps_json, rules_text=excluded.rules_text, is_live=1`);
-  const updExisting = db.prepare(`UPDATE campaigns SET title=?, description=?, category=?, geo=?, icon_text=?,
+  const updExisting = await db.prepare(`UPDATE campaigns SET title=?, description=?, category=?, geo=?, icon_text=?,
     user_reward_paise=?, upstream_payout_paise=?, steps_json=?, rules_text=?, is_live=1 WHERE source=? AND external_id=?`);
-  const updOverride = db.prepare(`UPDATE campaigns SET title=?, description=?, category=?, geo=?, icon_text=?,
+  const updOverride = await db.prepare(`UPDATE campaigns SET title=?, description=?, category=?, geo=?, icon_text=?,
     upstream_payout_paise=?, steps_json=?, rules_text=?, is_live=1 WHERE source=? AND external_id=?`);
   let imported = 0;
   const seen = [];
@@ -67,31 +67,31 @@ export async function importFeed(db, feed, idx = 0, fetchFn = fetch) {
     seen.push(String(it.external_id));
     const upstream = Number(it.upstream_payout_paise || 0);
     const autoReward = upstream > 0 ? Math.floor(upstream * share / 100) : Number(it.user_reward_paise || 0);
-    const existing = db.prepare('SELECT reward_override FROM campaigns WHERE source=? AND external_id=?').get(source, String(it.external_id));
+    const existing = await db.prepare('SELECT reward_override FROM campaigns WHERE source=? AND external_id=?').get(source, String(it.external_id));
     const steps = JSON.stringify(Array.isArray(it.steps) ? it.steps : []);
     if (!existing) {
-      upsert.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
+      await upsert.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
         (it.icon_text || it.title[0] || 'C').slice(0, 2), autoReward, upstream, steps, it.rules || '', source, String(it.external_id));
     } else if (existing.reward_override) {
-      updOverride.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
+      await updOverride.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
         (it.icon_text || it.title[0] || 'C').slice(0, 2), upstream, steps, it.rules || '', source, String(it.external_id));
     } else {
-      updExisting.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
+      await updExisting.run(it.title, it.description || '', it.category || 'General', it.geo || 'India',
         (it.icon_text || it.title[0] || 'C').slice(0, 2), autoReward, upstream, steps, it.rules || '', source, String(it.external_id));
     }
     imported++;
   }
   // Auto-hide offers that vanished from this feed.
   let hidden = 0;
-  const live = db.prepare('SELECT external_id FROM campaigns WHERE source=? AND is_live=1').all(source);
-  const hide = db.prepare('UPDATE campaigns SET is_live=0 WHERE source=? AND external_id=?');
-  for (const row of live) if (!seen.includes(String(row.external_id))) { hide.run(source, row.external_id); hidden++; }
+  const live = await db.prepare('SELECT external_id FROM campaigns WHERE source=? AND is_live=1').all(source);
+  const hide = await db.prepare('UPDATE campaigns SET is_live=0 WHERE source=? AND external_id=?');
+  for (const row of live) if (!seen.includes(String(row.external_id))) { await hide.run(source, row.external_id); hidden++; }
   return { ok: true, imported, hidden, feed: feed.name || source };
 }
 
 // Imports ALL enabled feeds. Returns a per-feed report.
 export async function importAllFeeds(db, fetchFn = fetch) {
-  const feeds = getFeeds(db);
+  const feeds = await getFeeds(db);
   if (feeds.length === 0) return { ok: false, imported: 0, results: [], reason: 'no feeds configured' };
   const results = [];
   let imported = 0;
@@ -116,6 +116,6 @@ export async function importFeedLegacy(db, { url, token, fetchFn = fetch } = {})
 // crediting path — it must call the same applyPostback() logic so crediting
 // stays idempotent.
 export async function reconcilePending(db) {
-  const row = db.prepare("SELECT COUNT(*) AS n FROM conversions WHERE status='pending'").get();
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM conversions WHERE status='pending'").get();
   return { checked: 0, still_pending: row.n, note: 'No reconcile URL configured; postback is the active path. Wire the network status API here and reuse applyPostback().' };
 }

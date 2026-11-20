@@ -6,6 +6,8 @@ services:
     env_file:
       - .env
     environment:
+      # Without DATABASE_URL (in .env) the app uses this SQLite file.
+      # With DATABASE_URL set, Postgres is used and the file/volume is unused.
       DB_PATH: /app/data/app.db
     volumes:
       - campaign-data:/app/data

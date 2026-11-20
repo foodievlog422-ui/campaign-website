@@ -1,13 +1,134 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import pg from 'pg';
 import { hashPassword, randomCode } from './lib.js';
 
-export function openDb(dbPath) {
+// ---------------------------------------------------------------------------
+// V3 data layer: ONE async facade, two engines.
+//  - DATABASE_URL set   -> PostgreSQL (Supabase pooler on Render). The app's
+//    tables live in a dedicated schema `campaign`, so they never collide
+//    with the EXN app's tables in the same Supabase project. SQLite's file
+//    storage on Render Free is ephemeral — Postgres is the money-safe store.
+//  - DATABASE_URL unset -> local SQLite (node:sqlite), unchanged for dev/tests.
+//
+// Call sites use:  await db.prepare(sql).get(...)/.all(...)/.run(...)
+// (or the db.get/db.all/db.run shortcuts). SQL is written ONCE in the SQLite
+// dialect; the pg facade translates it (see translatePgSql).
+// ---------------------------------------------------------------------------
+
+// Postgres returns int8 (COUNT, SUM, BIGSERIAL ids) and numeric as strings by
+// default. The whole app expects JS numbers (exactly like SQLite), so parse
+// them to Number globally. All values here (paise amounts, ids) are far
+// below Number.MAX_SAFE_INTEGER.
+pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v))); // int8
+pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v))); // numeric
+
+export const PG_SCHEMA = 'campaign';
+const TABLES = ['settings', 'users', 'sessions', 'campaigns', 'clicks', 'conversions',
+  'wallet_ledger', 'postback_log', 'withdrawals', 'claims'];
+// Tables whose primary key is not a serial `id` — pg run() must not append
+// RETURNING id for them.
+const NO_ID_TABLES = new Set(['settings', 'sessions']);
+// Same text shape as SQLite datetime('now'): UTC 'YYYY-MM-DD HH:MM:SS'.
+const NOW_PG = `to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS')`;
+
+// Translate one SQLite-dialect statement into Postgres dialect, qualified
+// into the `campaign` schema. Handles exactly the constructs this codebase
+// uses (verified by tests/test-translate.mjs):
+//   ? placeholders            -> $1..$n   (no '?' appears inside SQL literals)
+//   datetime('now')           -> NOW_PG expression
+//   MAX(col, n) scalar        -> GREATEST(col, n)   (aggregate MAX is unused)
+//   INSERT OR IGNORE INTO t   -> INSERT INTO t ... ON CONFLICT DO NOTHING
+//   FROM/JOIN/INTO/UPDATE t   -> ... campaign.t
+//   INSERT INTO t (serial id) -> appends RETURNING id so run() can report
+//                                lastInsertRowid like SQLite does.
+// Postgres natively accepts the codebase's ON CONFLICT(...) DO UPDATE SET
+// col=excluded.col upserts, so those pass through unchanged.
+export function translatePgSql(sql) {
+  let text = String(sql).trim().replace(/;\s*$/, '');
+  let onConflictDoNothing = false;
+  if (/^INSERT\s+OR\s+IGNORE\s+INTO/i.test(text)) {
+    text = text.replace(/^INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO');
+    onConflictDoNothing = true;
+  }
+  text = text.replace(/datetime\('now'\)/gi, NOW_PG);
+  text = text.replace(/\bMAX\((\s*[A-Za-z_][\w.]*\s*),(\s*\d+\s*)\)/g, 'GREATEST($1,$2)');
+  for (const t of TABLES) {
+    text = text.replace(new RegExp(`\\b(FROM|JOIN|INTO|UPDATE)\\s+${t}\\b`, 'gi'), `$1 ${PG_SCHEMA}.${t}`);
+  }
+  let n = 0;
+  text = text.replace(/\?/g, () => `$${++n}`);
+  let returningId = false;
+  const ins = text.match(/^INSERT\s+INTO\s+campaign\.(\w+)/i);
+  if (ins && !NO_ID_TABLES.has(ins[1].toLowerCase()) && !/RETURNING/i.test(text)) {
+    if (onConflictDoNothing) text += ' ON CONFLICT DO NOTHING';
+    text += ' RETURNING id';
+    returningId = true;
+  } else if (onConflictDoNothing) {
+    text += ' ON CONFLICT DO NOTHING';
+  }
+  return { text, returningId };
+}
+
+function sqliteFacade(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  db.exec(`
+  const raw = new DatabaseSync(dbPath);
+  raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  const prepare = (sql) => {
+    const stmt = raw.prepare(sql);
+    return {
+      get: async (...p) => stmt.get(...p),
+      all: async (...p) => stmt.all(...p),
+      run: async (...p) => {
+        const r = stmt.run(...p);
+        return { lastInsertRowid: Number(r.lastInsertRowid), changes: r.changes };
+      },
+    };
+  };
+  return {
+    mode: 'sqlite',
+    prepare,
+    get: (sql, ...p) => prepare(sql).get(...p),
+    all: (sql, ...p) => prepare(sql).all(...p),
+    run: (sql, ...p) => prepare(sql).run(...p),
+    exec: async (sql) => { raw.exec(sql); },
+    close: async () => { raw.close(); },
+  };
+}
+
+function pgFacade(connectionString) {
+  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(connectionString) || connectionString.includes('sslmode=disable');
+  const pool = new pg.Pool({
+    connectionString,
+    ssl: local ? undefined : { rejectUnauthorized: false }, // Supabase pooler requires SSL
+    max: 5,
+    connectionTimeoutMillis: 10000,
+  });
+  pool.on('error', (err) => console.error('[pg pool]', err.message));
+  const prepare = (sql) => {
+    const { text, returningId } = translatePgSql(sql);
+    return {
+      get: async (...p) => (await pool.query(text, p)).rows[0],
+      all: async (...p) => (await pool.query(text, p)).rows,
+      run: async (...p) => {
+        const r = await pool.query(text, p);
+        return { lastInsertRowid: returningId && r.rows[0] ? r.rows[0].id : undefined, changes: r.rowCount ?? 0 };
+      },
+    };
+  };
+  return {
+    mode: 'pg',
+    prepare,
+    get: (sql, ...p) => prepare(sql).get(...p),
+    all: (sql, ...p) => prepare(sql).all(...p),
+    run: (sql, ...p) => prepare(sql).run(...p),
+    exec: async (sql) => { await pool.query(sql); },
+    close: async () => { await pool.end(); },
+  };
+}
+
+const SQLITE_DDL = `
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,46 +212,152 @@ export function openDb(dbPath) {
     rolled_reward_paise INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), processed_at TEXT DEFAULT ''
   );
-  `);
-  // Additive V2 migrations for databases created by V1.
-  const addCol = (table, col, def) => {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(r => r.name);
-    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
-  };
-  addCol('users', 'approved_paise', 'INTEGER NOT NULL DEFAULT 0');
-  for (const [col, def] of [
-    ['campaign_type', "TEXT NOT NULL DEFAULT 'network'"],
-    ['reward_mode', "TEXT NOT NULL DEFAULT 'fixed'"],
-    ['reward_min_paise', 'INTEGER NOT NULL DEFAULT 0'],
-    ['reward_max_paise', 'INTEGER NOT NULL DEFAULT 0'],
-    ['reward_override', 'INTEGER NOT NULL DEFAULT 0'],
-    ['link_url', "TEXT DEFAULT ''"],
-    ['credit_days', 'INTEGER'],
-  ]) addCol('campaigns', col, def);
-  for (const [col, def] of [
-    ['upstream_payout_paise', 'INTEGER NOT NULL DEFAULT 0'],
-    ['approved_at', "TEXT DEFAULT ''"],
-    ['expected_credit_date', "TEXT DEFAULT ''"],
-    ['released', 'INTEGER NOT NULL DEFAULT 0'],
-    ['released_at', "TEXT DEFAULT ''"],
-    ['referral_amount_paise', 'INTEGER NOT NULL DEFAULT 0'],
-    ['referral_released', 'INTEGER NOT NULL DEFAULT 0'],
-  ]) addCol('conversions', col, def);
-  const defaults = {
-    referral_percent: '10', min_withdrawal_paise: '5000', feed_url: '', site_name: 'CampaignWala',
-    user_share_percent: '87.5', credit_days: '7', feeds_json: '',
-  };
-  const ins = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
-  for (const [k, v] of Object.entries(defaults)) ins.run(k, v);
+`;
+
+// Postgres twin of SQLITE_DDL (exported for tests): same tables/columns, in the `campaign` schema.
+// Money/id columns are BIGINT (SQLite INTEGER is 64-bit; pg INTEGER is 32-bit
+// and epoch-ms in sessions.expires_at would overflow it). Idempotent.
+export const PG_DDL = `
+  CREATE SCHEMA IF NOT EXISTS ${PG_SCHEMA};
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.users (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, phone TEXT DEFAULT '',
+    pass_hash TEXT NOT NULL, referral_code TEXT NOT NULL UNIQUE,
+    referred_by BIGINT REFERENCES ${PG_SCHEMA}.users(id), is_admin INTEGER NOT NULL DEFAULT 0,
+    pending_paise BIGINT NOT NULL DEFAULT 0, withdrawable_paise BIGINT NOT NULL DEFAULT 0,
+    approved_paise BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.sessions (
+    token_hash TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.users(id),
+    expires_at BIGINT NOT NULL, created_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.campaigns (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL, description TEXT DEFAULT '', category TEXT DEFAULT 'General',
+    geo TEXT DEFAULT 'India', icon_text TEXT DEFAULT 'C',
+    user_reward_paise BIGINT NOT NULL DEFAULT 0,
+    upstream_payout_paise BIGINT NOT NULL DEFAULT 0,
+    internal_notes TEXT DEFAULT '',
+    steps_json TEXT NOT NULL DEFAULT '[]', rules_text TEXT DEFAULT '',
+    campaign_type TEXT NOT NULL DEFAULT 'network',
+    reward_mode TEXT NOT NULL DEFAULT 'fixed',
+    reward_min_paise BIGINT NOT NULL DEFAULT 0, reward_max_paise BIGINT NOT NULL DEFAULT 0,
+    reward_override INTEGER NOT NULL DEFAULT 0,
+    link_url TEXT DEFAULT '', credit_days INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual', external_id TEXT DEFAULT '',
+    is_live INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG}),
+    UNIQUE(source, external_id)
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.clicks (
+    id BIGSERIAL PRIMARY KEY,
+    click_id TEXT NOT NULL UNIQUE, user_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.users(id),
+    campaign_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.campaigns(id),
+    stage INTEGER NOT NULL DEFAULT 0, conv_status TEXT NOT NULL DEFAULT 'none',
+    ip TEXT DEFAULT '', ua TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG}), updated_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.conversions (
+    id BIGSERIAL PRIMARY KEY,
+    click_id TEXT NOT NULL UNIQUE REFERENCES ${PG_SCHEMA}.clicks(click_id),
+    status TEXT NOT NULL DEFAULT 'pending', txn_id TEXT DEFAULT '',
+    user_reward_paise BIGINT NOT NULL DEFAULT 0,
+    upstream_payout_paise BIGINT NOT NULL DEFAULT 0,
+    pending_credited INTEGER NOT NULL DEFAULT 0, approved_credited INTEGER NOT NULL DEFAULT 0,
+    referral_credited INTEGER NOT NULL DEFAULT 0,
+    approved_at TEXT DEFAULT '', expected_credit_date TEXT DEFAULT '',
+    released INTEGER NOT NULL DEFAULT 0, released_at TEXT DEFAULT '',
+    referral_amount_paise BIGINT NOT NULL DEFAULT 0, referral_released INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG}), updated_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.wallet_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.users(id), kind TEXT NOT NULL,
+    amount_paise BIGINT NOT NULL, ref TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.postback_log (
+    id BIGSERIAL PRIMARY KEY,
+    received_at TEXT NOT NULL DEFAULT (${NOW_PG}), ip TEXT DEFAULT '',
+    click_id TEXT DEFAULT '', event TEXT DEFAULT '', status TEXT DEFAULT '',
+    accepted INTEGER NOT NULL DEFAULT 0, reason TEXT DEFAULT '', payload_json TEXT DEFAULT '{}'
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.withdrawals (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.users(id), amount_paise BIGINT NOT NULL,
+    method TEXT NOT NULL, destination TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    admin_note TEXT DEFAULT '', created_at TEXT NOT NULL DEFAULT (${NOW_PG}),
+    processed_at TEXT DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.claims (
+    id BIGSERIAL PRIMARY KEY,
+    click_id TEXT NOT NULL UNIQUE REFERENCES ${PG_SCHEMA}.clicks(click_id),
+    user_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.users(id),
+    campaign_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.campaigns(id),
+    note TEXT DEFAULT '', proof_url TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending', reject_reason TEXT DEFAULT '',
+    rolled_reward_paise BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG}), processed_at TEXT DEFAULT ''
+  );
+`;
+
+const SETTING_DEFAULTS = {
+  referral_percent: '10', min_withdrawal_paise: '5000', feed_url: '', site_name: 'CampaignWala',
+  user_share_percent: '87.5', credit_days: '7', feeds_json: '', retention_days: '30',
+  financial_retention_days: '60',
+};
+
+// Opens the right engine and ensures schema/tables/defaults exist.
+// DATABASE_URL set -> Postgres (schema `campaign`); otherwise SQLite at dbPath.
+export async function openDb(dbPath) {
+  const url = process.env.DATABASE_URL;
+  let db;
+  if (url) {
+    db = pgFacade(url);
+    await db.exec(PG_DDL);
+  } else {
+    db = sqliteFacade(dbPath);
+    await db.exec(SQLITE_DDL);
+    // Additive V2 migrations for SQLite databases created by V1 (the pg DDL
+    // above already carries the full V2 column set, so pg needs none).
+    const addCol = async (table, col, def) => {
+      const cols = (await db.all(`PRAGMA table_info(${table})`)).map(r => r.name);
+      if (!cols.includes(col)) await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    };
+    await addCol('users', 'approved_paise', 'INTEGER NOT NULL DEFAULT 0');
+    for (const [col, def] of [
+      ['campaign_type', "TEXT NOT NULL DEFAULT 'network'"],
+      ['reward_mode', "TEXT NOT NULL DEFAULT 'fixed'"],
+      ['reward_min_paise', 'INTEGER NOT NULL DEFAULT 0'],
+      ['reward_max_paise', 'INTEGER NOT NULL DEFAULT 0'],
+      ['reward_override', 'INTEGER NOT NULL DEFAULT 0'],
+      ['link_url', "TEXT DEFAULT ''"],
+      ['credit_days', 'INTEGER'],
+    ]) await addCol('campaigns', col, def);
+    for (const [col, def] of [
+      ['upstream_payout_paise', 'INTEGER NOT NULL DEFAULT 0'],
+      ['approved_at', "TEXT DEFAULT ''"],
+      ['expected_credit_date', "TEXT DEFAULT ''"],
+      ['released', 'INTEGER NOT NULL DEFAULT 0'],
+      ['released_at', "TEXT DEFAULT ''"],
+      ['referral_amount_paise', 'INTEGER NOT NULL DEFAULT 0'],
+      ['referral_released', 'INTEGER NOT NULL DEFAULT 0'],
+    ]) await addCol('conversions', col, def);
+  }
+  for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
+    await db.run('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', k, v);
+  }
   return db;
 }
 
-export function getSetting(db, key, fallback = '') {
-  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+export async function getSetting(db, key, fallback = '') {
+  const row = await db.get('SELECT value FROM settings WHERE key=?', key);
   return row ? row.value : fallback;
 }
-export function setSetting(db, key, value) {
-  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
+export async function setSetting(db, key, value) {
+  await db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value));
 }
 
 // The ONLY shape of a campaign that may ever leave the server.
@@ -158,12 +385,12 @@ export function rewardLabel(c) {
   return inrFmt(c.user_reward_paise);
 }
 
-export function seedDemo(db) {
-  const count = db.prepare('SELECT COUNT(*) AS n FROM campaigns').get().n;
-  if (count > 0) return;
-  const ins = db.prepare(`INSERT INTO campaigns
+export async function seedDemo(db) {
+  const row = await db.get('SELECT COUNT(*) AS n FROM campaigns');
+  if (row.n > 0) return;
+  const sql = `INSERT INTO campaigns
     (title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,internal_notes,steps_json,rules_text,source,external_id,is_live)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,1)`);
+    VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,1)`;
   // upstream_payout values + internal sentinel exist ONLY so the leak test can prove they never reach the frontend.
   const demo = [
     ['Demo Demat Account', 'Open a free demat account and complete KYC.', 'Finance', 'India', 'D', 25000, 123450, 'LEAK_SENTINEL_UPSTREAM_XYZ',
@@ -176,15 +403,15 @@ export function seedDemo(db) {
       JSON.stringify(['Click Start Campaign', 'Install the app', 'Register', 'Place your first order', 'Order must not be cancelled or returned']),
       'First order only. Cancelled or returned orders are rejected.', 'manual', 'demo-shop'],
   ];
-  for (const d of demo) ins.run(...d);
+  for (const d of demo) await db.run(sql, ...d);
 }
 
-export function ensureAdmin(db) {
+export async function ensureAdmin(db) {
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
   if (!email || !password) return;
-  const existing = db.prepare('SELECT id FROM users WHERE email=?').get(email.toLowerCase());
-  if (existing) { db.prepare('UPDATE users SET is_admin=1 WHERE id=?').run(existing.id); return; }
-  db.prepare('INSERT INTO users(name,email,pass_hash,referral_code,is_admin) VALUES(?,?,?,?,1)')
-    .run('Admin', email.toLowerCase(), hashPassword(password), randomCode(8));
+  const existing = await db.get('SELECT id FROM users WHERE email=?', email.toLowerCase());
+  if (existing) { await db.run('UPDATE users SET is_admin=1 WHERE id=?', existing.id); return; }
+  await db.run('INSERT INTO users(name,email,pass_hash,referral_code,is_admin) VALUES(?,?,?,?,1)',
+    'Admin', email.toLowerCase(), hashPassword(password), randomCode(8));
 }
