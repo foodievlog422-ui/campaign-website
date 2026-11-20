@@ -1,0 +1,1 @@
+{"description":"Campaign / cashback website: live campaigns, wallet (pending -> approved -> manual release -> withdrawable), S2S postback tracking, referral, admin dashboard.","engines":{"node":">=22"},"name":"campaign-website","private":true,"scripts":{"start":"node src/server.js","test":"node tests/run-tests.mjs"},"type":"module","version":"2.0.0"}
