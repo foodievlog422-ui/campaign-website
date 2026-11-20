@@ -1,16 +1,34 @@
-# Test Results — Campaign Website V3
+# Test Results — Campaign Website V4
 
-Run: 2026-11-20 (IST), in this VM. Command: `npm test` — now a chain of four suites:
+Run: 2026-11-20 (IST), in this VM. Command: `npm test` — a chain of four suites:
 `tests/run-tests.mjs` (HTTP end-to-end, SQLite) + `tests/test-translate.mjs` (Postgres SQL translator units) + `tests/test-retention.mjs` (retention, facade-level) + `tests/pg-smoke.mjs` (live Postgres smoke — self-skips without `TEST_DATABASE_URL`).
 
 ## Headline results
 
 | Suite | Result |
 |---|---|
-| HTTP end-to-end (SQLite, real server over HTTP) | **46/46 PASS** (unchanged from V2.1 — same behaviour on the new async data layer) |
+| HTTP end-to-end (SQLite, real server over HTTP) | **65/65 PASS** (46 carried over from V3 + 19 new V4 checks) |
 | SQL translator unit tests (`translatePgSql`) | **12/12 PASS** |
 | Retention tests (both tiers) | **15/15 PASS** |
 | Postgres smoke (`TEST_DATABASE_URL`) | **SKIPPED in this VM** — no live Postgres available here; the live run is part of deploy verification (see below) |
+
+## V4 changes — UI redesign, inline form errors, admin password
+
+**UI redesign (`public/style.css` rewritten + server templates):** warm off-white paper background (`#FAF7F1`), deep-green header (`#0A3524`) and primary buttons (`#0E6B3F`), single amber accent (`#E9A13B`/`#B45309`) for the logo mark, category chips and DUE badges. No gradients, no neon, system font stack only (no external font/CDN that can fail). Home now has a hero ("Campaigns complete karo, paisa kamao"), a 3-step "kaise kaam karta hai" strip, trust chips, and campaign cards with a "You get ₹…" reward block; campaign detail has a green reward panel, numbered steps and a rules box; empty states are designed cards ("Campaigns jald aa rahe hain") instead of bare text; dashboard/admin use stat tiles; admin lists stay stacked cards on phone. All routes, copy (Hinglish) and the leak rules are unchanged — the full leak suite (test 6, 8b2, 8e3) still passes on the new templates.
+
+**Inline form errors (no separate error page):** login, signup and admin login (same `/login` form) now re-render the SAME form with HTTP 200 on failure — the message appears in red (`.ferr`) directly under the field at fault, the field gets a red border (`.invalid`), entered values (name/email/phone/destination/amount) are preserved, and the password is never echoed. Wrong credentials show the generic "Email ya password galat hai" under BOTH the email and password fields. The same pattern was applied to the withdraw form (below-minimum / over-balance / missing destination re-render the wallet page) and to claim submit (empty note redirects back to the same progress page, which shows the red error under the note field).
+
+**Admin password:** `ensureAdmin` now syncs on every boot — if `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set, the admin is created when missing and its hash is updated whenever the env password differs (verified by test 9f: boot with password A → A works; restart with password B → B works, A fails). New **Admin → Change Password** page: current + new + confirm, inline errors for wrong current / short new / mismatched confirm, success notice on the same page, and the existing session stays logged in. Documented caveat: a later restart re-syncs the password from env, so the env must be updated after a panel change.
+
+**New HTTP tests (19, all PASS — section 9 of `tests/run-tests.mjs`):**
+- 9a1–9a4 wrong-password login returns the login page itself (200, form present), red errors under both fields + red borders, email preserved, wrong password absent from the HTML, unknown email gets the same generic error.
+- 9b1–9b2 signup: short password and duplicate email produce inline errors on the signup form with values preserved.
+- 9c1–9c3 withdraw: over-balance and below-minimum re-render the wallet page with the red error and preserved amount/destination.
+- 9d1 claim with an empty note returns to the progress page showing the red error under the note field.
+- 9e1–9e7 change-password page exists; wrong current and mismatched confirm fail inline; success keeps the session valid; old password then fails login (inline), new password logs in.
+- 9f1–9f2 admin env-sync across a real server restart with a changed `ADMIN_PASSWORD`.
+
+## V3 results (carried, still valid)
 | Postgres engine verification via pg-mem (throwaway, not committed) | **9/9 PASS** (1 partial, documented below) |
 
 ## V3 change 1 — Postgres when `DATABASE_URL` is set

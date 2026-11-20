@@ -167,13 +167,48 @@ async function layout(user, title, body) {
   const site = esc(await getSetting(db, 'site_name', 'CampaignWala'));
   const nav = user
     ? `<span class="who">${esc(user.name)}</span><a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}<form method="post" action="/logout" class="inline"><button class="linkbtn" type="submit">Logout</button></form>`
-    : `<a href="/login">Login</a><a class="btn small" href="/signup">Sign up</a>`;
+    : `<a href="/login">Login</a><a class="btn small amber" href="/signup">Sign up</a>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · ${site}</title><link rel="stylesheet" href="/style.css"></head><body>
-<header><div class="wrap head"><a class="logo" href="/">${site}</a><nav>${nav}</nav></div></header>
+<header><div class="wrap head"><a class="logo" href="/"><span class="mark">₹</span>${site}</a><nav>${nav}</nav></div></header>
 <main class="wrap">${body}</main>
 <footer><div class="wrap foot"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a></div></footer>
 </body></html>`;
+}
+
+// ---------- inline form errors (V4) ----------
+// Auth/user form failures re-render THE SAME form: the message sits in red
+// directly under the field it belongs to and the field border turns red.
+// Entered values are preserved (passwords are NEVER echoed back).
+const ferr = (errs, name) => (errs && errs[name] ? `<p class="ferr">${esc(errs[name])}</p>` : '');
+const inv = (errs, name) => (errs && errs[name] ? ' class="invalid"' : '');
+
+function loginForm({ email = '', errs = {}, remember = false } = {}) {
+  const credErr = errs.credentials || '';
+  const eErrs = credErr ? { ...errs, email: credErr } : errs;
+  const pErrs = credErr ? { ...errs, password: credErr } : errs;
+  return `<div class="authwrap"><section class="card authcard"><div class="brandmark">₹</div>
+  <h1>Welcome back</h1><p class="muted">Login karo — apne campaigns, progress aur wallet yahi milenge.</p>
+  <form class="form" method="post" action="/login">
+    <label>Email<input name="email" type="email" required autocomplete="email" value="${esc(email)}"${inv(eErrs, 'email')}>${ferr(eErrs, 'email')}</label>
+    <label>Password<input name="password" type="password" required autocomplete="current-password"${inv(pErrs, 'password')}>${ferr(pErrs, 'password')}</label>
+    <label class="check"><input type="checkbox" name="remember" value="1"${remember ? ' checked' : ''}> Remember me for 30 days</label>
+    <button class="btn block" type="submit">Login</button></form>
+  <p class="muted center">Naya account banana hai? <a href="/signup">Sign up karo</a></p></section></div>`;
+}
+
+function signupForm({ name = '', email = '', phone = '', ref = '', errs = {}, remember = false } = {}) {
+  return `<div class="authwrap"><section class="card authcard"><div class="brandmark">₹</div>
+  <h1>Create account</h1><p class="muted">Free account banao, campaign complete karo aur wallet se paisa nikalo.</p>
+  <form class="form" method="post" action="/signup">
+    <label>Name<input name="name" required autocomplete="name" value="${esc(name)}"${inv(errs, 'name')}>${ferr(errs, 'name')}</label>
+    <label>Email<input name="email" type="email" required autocomplete="email" value="${esc(email)}"${inv(errs, 'email')}>${ferr(errs, 'email')}</label>
+    <label>Phone<input name="phone" autocomplete="tel" value="${esc(phone)}"${inv(errs, 'phone')}>${ferr(errs, 'phone')}</label>
+    <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"${inv(errs, 'password')}>${ferr(errs, 'password')}</label>
+    <label>Referral code (optional)<input name="ref" value="${esc(ref)}"></label>
+    <label class="check"><input type="checkbox" name="remember" value="1"${remember ? ' checked' : ''}> Remember me for 30 days</label>
+    <button class="btn block" type="submit">Sign up</button></form>
+  <p class="muted center">Pehle se account hai? <a href="/login">Login karo</a></p></section></div>`;
 }
 function timelineHtml(click) {
   const items = STAGES.map((label, i) => {
@@ -223,22 +258,37 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/' && req.method === 'GET') {
       const cards = (await publicList()).map(c => `<article class="card camp"><div class="icon">${esc(c.icon_text)}</div>
-        <div class="grow"><h3>${esc(c.title)}</h3><p class="muted">${esc(c.category)} · ${esc(c.geo)}</p><p>${esc(c.description)}</p></div>
-        <div class="reward">${esc(rewardLabel(c))}<a class="btn" href="/campaign/${c.id}">View</a></div></article>`).join('');
-      return html(res, 200, await layout(user, 'Live Campaigns', `<h1>Live Campaigns</h1><p class="muted">Campaign complete karo, paisa seedha tumhare wallet me. Withdraw UPI, bank ya gift card me.</p>${cards || '<p>No live campaigns right now. Thodi der me dobara check karo.</p>'}`));
+        <div class="grow"><h3>${esc(c.title)} <span class="cat-chip">${esc(c.category)}</span></h3><p class="meta">${esc(c.geo)} · Live</p><p class="desc">${esc(c.description)}</p></div>
+        <div class="reward"><span><span class="get">You get</span><br>${esc(rewardLabel(c))}</span><a class="btn small" href="/campaign/${c.id}">Details</a></div></article>`).join('');
+      const empty = `<div class="card empty"><div class="ring">₹</div><h3>Campaigns jald aa rahe hain</h3>
+        <p class="muted">Abhi naye campaigns taiyaar ho rahe hain. Thodi der me dobara check karo — achhe offers sabse pehle yahi dikhenge.</p>
+        ${user ? '' : '<p style="margin-top:14px"><a class="btn" href="/signup">Free account banao</a></p>'}</div>`;
+      return html(res, 200, await layout(user, 'Live Campaigns', `
+      <section class="hero"><h1>Campaigns complete karo, <span class="accent">paisa kamao.</span></h1>
+      <p class="lede">Simple tasks — app install, account open, KYC — complete karo. Reward pehle wallet me, phir UPI, bank ya gift card me withdraw karo.</p>
+      <div class="cta">${user ? '<a class="btn" href="/my">My Dashboard kholo</a><a class="btn ghost" href="/wallet">Wallet dekho</a>' : '<a class="btn" href="/signup">Free account banao</a><a class="btn ghost" href="/login">Login</a>'}</div>
+      <div class="trustline"><span class="tchip"><b>Wallet</b> me safe balance</span><span class="tchip">Har step ki <b>live tracking</b></span><span class="tchip">Withdraw <b>UPI / Bank / Gift Card</b></span></div></section>
+      <section class="steps">
+        <div class="step"><div class="num">1</div><h3>Campaign chuno</h3><p>Neeche live campaigns me se apne liye sahi offer chuno aur Start dabao.</p></div>
+        <div class="step"><div class="num">2</div><h3>Steps complete karo</h3><p>Har step ka status tumhari progress screen par live dikhta rahega.</p></div>
+        <div class="step"><div class="num">3</div><h3>Paisa withdraw karo</h3><p>Approval ke baad amount wallet me aayega — wahan se kabhi bhi withdraw karo.</p></div>
+      </section>
+      <div class="section-head"><h2>Live Campaigns</h2><span class="muted">Reward seedha wallet me</span></div>
+      ${cards || empty}`));
     }
     if (p.startsWith('/campaign/') && req.method === 'GET') {
       const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[2]);
       if (!c) return html(res, 404, await layout(user, 'Not found', '<h1>Campaign not found</h1>'));
       const pub = publicCampaign(c);
-      return html(res, 200, await layout(user, pub.title, `<article class="card"><div class="icon big">${esc(pub.icon_text)}</div>
-        <h1>${esc(pub.title)}</h1><p class="muted">${esc(pub.category)} · ${esc(pub.geo)}</p><p>${esc(pub.description)}</p>
-        <p class="bigreward">You get: ${esc(rewardLabel(pub))}</p>
-        ${pub.reward_mode === 'random' ? '<p class="muted">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}
+      return html(res, 200, await layout(user, pub.title, `<article class="card"><div style="display:flex;gap:14px;align-items:flex-start"><div class="icon big">${esc(pub.icon_text)}</div>
+        <div class="grow"><h1 style="margin-bottom:4px">${esc(pub.title)}</h1><p class="meta" style="margin:0"><span class="cat-chip">${esc(pub.category)}</span> · ${esc(pub.geo)}</p></div></div>
+        <p style="margin-top:12px">${esc(pub.description)}</p>
+        <div class="reward-panel"><p class="muted" style="margin:0 0 2px">Campaign complete karne par tumhe milega</p><p class="bigreward">${esc(rewardLabel(pub))}</p>
+        ${pub.reward_mode === 'random' ? '<p class="muted" style="margin:6px 0 0">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}</div>
         ${pub.campaign_type === 'custom' ? '<p class="muted">Yeh manual verification campaign hai: Start karke link se task complete karo, phir apni progress page se claim submit karo. Admin verify karke approve karega.</p>' : ''}
-        <h2>Steps</h2><ol>${pub.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
-        <h2>Rules</h2><p>${esc(pub.rules)}</p>
-        ${user ? `<form method="post" action="/campaign/${pub.id}/start"><button class="btn" type="submit">Start Campaign</button></form>` : '<a class="btn" href="/login">Login to start</a>'}
+        <h2>Steps — aise complete hoga</h2><ol class="steps-list">${pub.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+        <h2>Rules</h2><div class="rules-box">${esc(pub.rules)}</div>
+        <div style="margin-top:18px">${user ? `<form method="post" action="/campaign/${pub.id}/start"><button class="btn block" type="submit">Start Campaign</button></form>` : '<a class="btn block" href="/login">Login karke start karo</a>'}</div>
         </article>`));
     }
     if (p.match(/^\/campaign\/\d+\/start$/) && req.method === 'POST') {
@@ -252,34 +302,42 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, `/my/campaigns/${clickId}`);
     }
 
-    // Auth
+    // Auth — failures re-render the SAME form with red inline errors under
+    // the field at fault (V4). No separate error page, password never echoed.
     if (p === '/signup' && req.method === 'GET') {
       const ref = url.searchParams.get('ref') || parseCookies(req).ref || '';
-      return html(res, 200, await layout(null, 'Sign up', `<h1>Create account</h1><form class="card form" method="post" action="/signup">
-        <label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label>
-        <label>Phone<input name="phone"></label><label>Password<input name="password" type="password" required minlength="8"></label>
-        <label>Referral code (optional)<input name="ref" value="${esc(ref)}"></label>
-        <label class="check"><input type="checkbox" name="remember" value="1"> Remember me for 30 days</label>
-        <button class="btn" type="submit">Sign up</button></form>`));
+      return html(res, 200, await layout(null, 'Sign up', signupForm({ ref })));
     }
     if (p === '/signup' && req.method === 'POST') {
       const b = await readBody(req);
-      if (!b.name || !b.email || !b.password || String(b.password).length < 8) return html(res, 400, await layout(null, 'Sign up', '<p>Details sahi se bharo — password kam se kam 8 characters.</p>'));
-      if (await db.prepare('SELECT id FROM users WHERE email=?').get(String(b.email).toLowerCase())) return html(res, 400, await layout(null, 'Sign up', '<p>Is email se account pehle se hai. Login karo.</p>'));
+      const vals = { name: b.name || '', email: b.email || '', phone: b.phone || '', ref: b.ref || '', remember: b.remember === '1' };
+      const errs = {};
+      if (!String(vals.name).trim()) errs.name = 'Apna naam likho.';
+      if (!String(vals.email).trim()) errs.email = 'Email likho.';
+      else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(vals.email).trim())) errs.email = 'Yeh email sahi nahi lag raha — dobara check karo.';
+      if (!b.password) errs.password = 'Password rakho.';
+      else if (String(b.password).length < 8) errs.password = 'Password kam se kam 8 characters ka rakho.';
+      if (!errs.email && await db.prepare('SELECT id FROM users WHERE email=?').get(String(vals.email).toLowerCase()))
+        errs.email = 'Is email se account pehle se hai — neeche se login karo.';
+      if (Object.keys(errs).length) return html(res, 200, await layout(null, 'Sign up', signupForm({ ...vals, errs })));
       const referrer = b.ref ? await db.prepare('SELECT id FROM users WHERE referral_code=?').get(String(b.ref).trim().toUpperCase()) : null;
       const info = await db.prepare('INSERT INTO users(name,email,phone,pass_hash,referral_code,referred_by) VALUES(?,?,?,?,?,?)')
-        .run(b.name, String(b.email).toLowerCase(), b.phone || '', hashPassword(b.password), randomCode(8), referrer ? referrer.id : null);
+        .run(String(vals.name).trim(), String(vals.email).toLowerCase(), vals.phone || '', hashPassword(b.password), randomCode(8), referrer ? referrer.id : null);
       const cookie = await startSession(res, Number(info.lastInsertRowid), b.remember === '1');
       return redirect(res, '/my', { 'Set-Cookie': cookie });
     }
-    if (p === '/login' && req.method === 'GET') return html(res, 200, await layout(null, 'Login', `<h1>Login</h1><form class="card form" method="post" action="/login">
-      <label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" required></label>
-      <label class="check"><input type="checkbox" name="remember" value="1"> Remember me for 30 days</label>
-      <button class="btn" type="submit">Login</button></form><p class="muted">Naya account? <a href="/signup">Sign up</a></p>`));
+    if (p === '/login' && req.method === 'GET') return html(res, 200, await layout(null, 'Login', loginForm()));
     if (p === '/login' && req.method === 'POST') {
       const b = await readBody(req);
-      const u = await db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email || '').toLowerCase());
-      if (!u || !verifyPassword(b.password || '', u.pass_hash)) return html(res, 401, await layout(null, 'Login', '<p>Email ya password galat hai.</p>'));
+      const email = String(b.email || '').trim();
+      const u = await db.prepare('SELECT * FROM users WHERE email=?').get(email.toLowerCase());
+      if (!u || !verifyPassword(b.password || '', u.pass_hash)) {
+        // Same generic message for unknown email / wrong password, shown in
+        // red under BOTH fields so the user sees exactly what to re-check.
+        const errs = { credentials: 'Email ya password galat hai — dobara check karke try karo.' };
+        if (!email) errs.email = 'Email likho.';
+        return html(res, 200, await layout(null, 'Login', loginForm({ email, errs, remember: b.remember === '1' })));
+      }
       const cookie = await startSession(res, u.id, b.remember === '1');
       return redirect(res, '/my', { 'Set-Cookie': cookie });
     }
@@ -300,9 +358,15 @@ const server = http.createServer(async (req, res) => {
       const proto = req.headers['x-forwarded-proto'] || 'http';
       const refLink = `${proto}://${req.headers.host}/r/${user.referral_code}`;
       return html(res, 200, await layout(user, 'My Dashboard', `<h1>My Dashboard</h1>
-        <section class="card"><h2>Wallet</h2><p>Pending: <b>${inr(user.pending_paise)}</b> · Approved (release pending): <b>${inr(user.approved_paise)}</b> · Withdrawable: <b>${inr(user.withdrawable_paise)}</b></p><a class="btn small" href="/wallet">Withdraw karo</a></section>
+        <h2 style="margin-top:4px">Wallet</h2>
+        <div class="stats">
+          <div class="stat"><p class="stat-line">Pending: <b>${inr(user.pending_paise)}</b></p><p class="hint">Partner approval ka wait ho raha hai</p></div>
+          <div class="stat"><p class="stat-line">Approved (release pending): <b>${inr(user.approved_paise)}</b></p><p class="hint">Approve ho gaya — admin expected date par release karega</p></div>
+          <div class="stat"><p class="stat-line">Withdrawable: <b>${inr(user.withdrawable_paise)}</b></p><p class="hint">Yeh paisa abhi withdraw kar sakte ho</p></div>
+        </div>
+        <p style="margin:0 0 6px"><a class="btn" href="/wallet">Wallet kholo — withdraw karo</a></p>
         <section class="card"><h2>Refer &amp; Earn</h2><p class="muted">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${esc(await getSetting(db, 'referral_percent', '10'))}% commission milega.</p><p class="reflink">${esc(refLink)}</p><p class="muted">Code: ${esc(user.referral_code)}</p></section>
-        <h2>My Campaigns</h2>${list || '<p>Abhi koi campaign start nahi kiya.</p>'}`));
+        <h2>My Campaigns</h2>${list || '<div class="card empty"><div class="ring">₹</div><h3>Abhi koi campaign start nahi kiya</h3><p class="muted">Home page se koi live campaign chuno aur Start dabao — progress yahi dikhega.</p><p style="margin-top:12px"><a class="btn small" href="/">Campaigns dekho</a></p></div>'}`));
     }
     if (p.startsWith('/my/campaigns/') && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
@@ -321,21 +385,21 @@ const server = http.createServer(async (req, res) => {
       }
       if (conv && conv.released) extra += `<p class="notice">💰 Paisa wallet me credit ho gaya hai — <a href="/wallet">Wallet dekho</a></p>`;
       if (cl.campaign_type === 'custom') {
-        if (!claim) {
-          extra += `<h2>Task complete kar liya? Claim karo</h2><form class="form" method="post" action="/my/campaigns/${esc(cl.click_id)}/claim">
-            <label>Note (kya kiya, kis number/ID se)<textarea name="note" required rows="3"></textarea></label>
+        const claimErr = url.searchParams.get('claim_error') === 'note';
+        const noteErrHtml = claimErr ? '<p class="ferr">Note likhna zaroori hai — kya kiya, kis number/ID se, short me likho.</p>' : '';
+        const claimForm = (btnLabel) => `<form class="form" method="post" action="/my/campaigns/${esc(cl.click_id)}/claim">
+            <label>Note (kya kiya, kis number/ID se)<textarea name="note" required rows="3"${claimErr ? ' class="invalid"' : ''}></textarea>${noteErrHtml}</label>
             <label>Proof link (screenshot ka link, optional)<input name="proof_url" type="url" placeholder="https://..."></label>
-            <button class="btn" type="submit">Claim Submit Karo</button></form>`;
+            <button class="btn" type="submit">${btnLabel}</button></form>`;
+        if (!claim) {
+          extra += `<h2>Task complete kar liya? Claim karo</h2>${claimForm('Claim Submit Karo')}`;
         } else if (claim.status === 'pending') {
           extra += `<p class="notice">📩 Tumhara claim submit ho gaya hai. Admin verify karke approve/reject karega — status yahi dikhega.</p>`;
         } else if (claim.status === 'approved') {
           extra += `<p class="notice">✅ Claim approved — reward: <b>${inr(claim.rolled_reward_paise)}</b>. Upar wali expected date par wallet me release hoga.</p>`;
         } else if (claim.status === 'rejected') {
           extra += `<p class="notice bad">❌ Claim reject ho gaya. Reason: <b>${esc(claim.reject_reason || '—')}</b></p>
-          <h2>Dobara claim karo</h2><form class="form" method="post" action="/my/campaigns/${esc(cl.click_id)}/claim">
-            <label>Note<textarea name="note" required rows="3"></textarea></label>
-            <label>Proof link (optional)<input name="proof_url" type="url" placeholder="https://..."></label>
-            <button class="btn" type="submit">Claim Dobara Submit Karo</button></form>`;
+          <h2>Dobara claim karo</h2>${claimForm('Claim Dobara Submit Karo')}`;
         }
       }
       return html(res, 200, await layout(user, 'Progress', `<article class="card"><h1>${esc(cl.title)}</h1>
@@ -349,9 +413,10 @@ const server = http.createServer(async (req, res) => {
       const clickId = p.split('/')[3];
       const cl = await db.prepare('SELECT cl.*, c.campaign_type FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
       if (!cl) return html(res, 404, await layout(user, 'Not found', '<h1>Not found</h1>'));
-      if (cl.campaign_type !== 'custom') return html(res, 400, await layout(user, 'Claim', '<p>Is campaign me claim nahi hota — tracking automatic hai.</p>'));
+      if (cl.campaign_type !== 'custom') return redirect(res, `/my/campaigns/${clickId}`);
       const b = await readBody(req);
-      if (!b.note || !String(b.note).trim()) return html(res, 400, await layout(user, 'Claim', '<p>Note likhna zaroori hai.</p>'));
+      // Empty note: back to the SAME progress page, red error under the field.
+      if (!b.note || !String(b.note).trim()) return redirect(res, `/my/campaigns/${clickId}?claim_error=note`);
       const existing = await db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
       if (existing && existing.status !== 'rejected') return redirect(res, `/my/campaigns/${clickId}`);
       if (existing) await db.prepare('DELETE FROM claims WHERE click_id=?').run(clickId);
@@ -381,36 +446,47 @@ const server = http.createServer(async (req, res) => {
         claim_status: claim ? claim.status : null,
       });
     }
-    if (p === '/wallet' && req.method === 'GET') {
-      if (!user) return redirect(res, '/login');
+    // Wallet page is a function so a failed withdraw can re-render THE SAME
+    // page with red inline errors + preserved values (V4).
+    const walletPage = async (errs = {}, vals = {}) => {
+      const fresh = await db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
       const min = Number(await getSetting(db, 'min_withdrawal_paise', '5000'));
       const wds = await db.prepare('SELECT * FROM withdrawals WHERE user_id=? ORDER BY id DESC').all(user.id);
       const ledger = await db.prepare('SELECT * FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 20').all(user.id);
       const approvedList = await db.prepare(`SELECT cv.user_reward_paise, cv.expected_credit_date, c.title FROM conversions cv
         JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id
         WHERE cl.user_id=? AND cv.status='approved' AND cv.released=0 ORDER BY cv.expected_credit_date`).all(user.id);
-      return html(res, 200, await layout(user, 'Wallet', `<h1>Wallet</h1><section class="card">
-        <p>Pending balance: <b>${inr(user.pending_paise)}</b> <span class="muted">(partner approval ka wait ho raha hai)</span></p>
-        <p>Approved (release pending): <b>${inr(user.approved_paise)}</b> <span class="muted">(approve ho gaya hai — admin expected date par release karega, tab withdrawable hoga)</span></p>
+      const sel = (m) => (vals.method === m ? ' selected' : '');
+      return layout(user, 'Wallet', `<h1>Wallet</h1><section class="card">
+        <p>Pending balance: <b>${inr(fresh.pending_paise)}</b> <span class="muted">(partner approval ka wait ho raha hai)</span></p>
+        <p>Approved (release pending): <b>${inr(fresh.approved_paise)}</b> <span class="muted">(approve ho gaya hai — admin expected date par release karega, tab withdrawable hoga)</span></p>
         ${approvedList.map(a => `<p class="muted">• ${esc(a.title)} — ${inr(a.user_reward_paise)} · Expected credit: <b>${esc(fmtDate(a.expected_credit_date))}</b></p>`).join('')}
-        <p>Withdrawable balance: <b>${inr(user.withdrawable_paise)}</b></p>
-        <form class="form" method="post" action="/wallet/withdraw"><label>Amount (₹)<input name="amount" type="number" min="1" required></label>
-        <label>Method<select name="method"><option value="upi">UPI</option><option value="bank">Bank</option><option value="giftcard">Gift Card</option></select></label>
-        <label>UPI ID / Bank details / Email<input name="destination" required></label>
+        <p class="balance-line">Withdrawable balance: <b>${inr(fresh.withdrawable_paise)}</b></p>
+        <form class="form" method="post" action="/wallet/withdraw"><label>Amount (₹)<input name="amount" type="number" min="1" required value="${esc(vals.amount ?? '')}"${inv(errs, 'amount')}>${ferr(errs, 'amount')}</label>
+        <label>Method<select name="method"><option value="upi"${sel('upi')}>UPI</option><option value="bank"${sel('bank')}>Bank</option><option value="giftcard"${sel('giftcard')}>Gift Card</option></select></label>
+        <label>UPI ID / Bank details / Email<input name="destination" required value="${esc(vals.destination ?? '')}"${inv(errs, 'destination')}>${ferr(errs, 'destination')}</label>
         <p class="muted">Minimum withdrawal: ${inr(min)}</p><button class="btn" type="submit">Request Withdrawal</button></form></section>
         <h2>My Withdrawals</h2>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)} · Status: ${esc(w.status)}</article>`).join('') || '<p>Abhi koi withdrawal nahi.</p>'}
-        <h2>History</h2>${ledger.map(l => `<article class="card"><span>${esc(l.kind)}</span> <b>${inr(l.amount_paise)}</b> <span class="muted">${esc(l.created_at)}</span></article>`).join('') || '<p>No history yet.</p>'}`));
+        <h2>History</h2>${ledger.map(l => `<article class="card"><span>${esc(l.kind)}</span> <b>${inr(l.amount_paise)}</b> <span class="muted">${esc(l.created_at)}</span></article>`).join('') || '<p>No history yet.</p>'}`);
+    };
+    if (p === '/wallet' && req.method === 'GET') {
+      if (!user) return redirect(res, '/login');
+      return html(res, 200, await walletPage());
     }
     if (p === '/wallet/withdraw' && req.method === 'POST') {
       if (!user) return redirect(res, '/login');
       const b = await readBody(req);
       const amount = Math.round(Number(b.amount || 0) * 100);
       const min = Number(await getSetting(db, 'min_withdrawal_paise', '5000'));
-      if (!amount || amount < min) return html(res, 400, await layout(user, 'Wallet', `<p>Minimum withdrawal ${inr(min)} hai.</p>`));
-      if (amount > user.withdrawable_paise) return html(res, 400, await layout(user, 'Wallet', '<p>Withdrawable balance kam hai.</p>'));
-      if (!b.destination || !['upi', 'bank', 'giftcard'].includes(b.method)) return html(res, 400, await layout(user, 'Wallet', '<p>Details sahi se bharo.</p>'));
+      const vals = { amount: b.amount || '', method: b.method || 'upi', destination: b.destination || '' };
+      const errs = {};
+      if (!amount || amount < min) errs.amount = `Minimum withdrawal ${inr(min)} hai — isse kam amount nahi nikal sakta.`;
+      else if (amount > user.withdrawable_paise) errs.amount = `Withdrawable balance sirf ${inr(user.withdrawable_paise)} hai — amount kam karo.`;
+      if (!b.destination || !String(b.destination).trim()) errs.destination = 'Jahan paisa bhejna hai woh details likho (UPI ID / bank details / email).';
+      else if (!['upi', 'bank', 'giftcard'].includes(b.method)) errs.destination = 'Method sahi se chuno.';
+      if (Object.keys(errs).length) return html(res, 200, await walletPage(errs, vals));
       await db.prepare('UPDATE users SET withdrawable_paise=withdrawable_paise-? WHERE id=?').run(amount, user.id);
-      const info = await db.prepare('INSERT INTO withdrawals(user_id,amount_paise,method,destination) VALUES(?,?,?,?)').run(user.id, amount, b.method, b.destination);
+      const info = await db.prepare('INSERT INTO withdrawals(user_id,amount_paise,method,destination) VALUES(?,?,?,?)').run(user.id, amount, b.method, String(b.destination).trim());
       await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(user.id, 'withdrawal_hold', -amount, 'wd_' + info.lastInsertRowid);
       return redirect(res, '/wallet');
     }
@@ -430,7 +506,7 @@ const server = http.createServer(async (req, res) => {
     return html(res, 404, await layout(user, 'Not found', '<h1>Page not found</h1>'));
   } catch (err) {
     console.error(err);
-    return html(res, 500, '<h1>Something went wrong</h1>');
+    return html(res, 500, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Error</title><link rel="stylesheet" href="/style.css"></head><body><main class="wrap"><div class="card empty" style="margin-top:28px"><div class="ring">!</div><h3>Kuch gadbad ho gayi</h3><p class="muted">Server par ek problem aayi hai. Thodi der me dobara try karo.</p><p style="margin-top:12px"><a class="btn small" href="/">Home par jao</a></p></div></main></body></html>`);
   }
 });
 
@@ -447,8 +523,16 @@ async function adminRoutes(req, res, p, url, user) {
     };
     const lastCleanup = await getSetting(db, 'last_cleanup_at', '');
     return html(res, 200, await L('Admin', `<h1>Admin Dashboard</h1>
-      <section class="card"><p>Users: <b>${stats.users}</b> · Campaigns: <b>${stats.campaigns}</b> · Conversions: <b>${stats.conversions}</b> · Pending withdrawals: <b>${stats.pendingWd}</b> · Release pending: <b>${stats.pendingRelease}</b> · Claims pending: <b>${stats.pendingClaims}</b></p>${lastCleanup ? `<p class="muted">Last data cleanup (retention: raw 30d · financial 60d after closure): ${esc(lastCleanup)}</p>` : ''}</section>
-      <nav class="adminnav"><a class="btn small" href="/admin/campaigns">Campaigns</a><a class="btn small" href="/admin/releases">Releases</a><a class="btn small" href="/admin/claims">Claims</a><a class="btn small" href="/admin/earnings">Earnings</a><a class="btn small" href="/admin/users">Users</a><a class="btn small" href="/admin/conversions">Conversions &amp; Postbacks</a><a class="btn small" href="/admin/withdrawals">Withdrawals</a><a class="btn small" href="/admin/settings">Settings</a></nav>
+      <div class="stats statgrid">
+        <div class="stat"><span class="n">${stats.users}</span><span class="l">Users</span></div>
+        <div class="stat"><span class="n">${stats.campaigns}</span><span class="l">Campaigns</span></div>
+        <div class="stat"><span class="n">${stats.conversions}</span><span class="l">Conversions</span></div>
+        <div class="stat"><span class="n">${stats.pendingWd}</span><span class="l">Pending withdrawals</span></div>
+        <div class="stat"><span class="n">${stats.pendingRelease}</span><span class="l">Release pending</span></div>
+        <div class="stat"><span class="n">${stats.pendingClaims}</span><span class="l">Claims pending</span></div>
+      </div>
+      ${lastCleanup ? `<p class="muted">Last data cleanup (retention: raw 30d · financial 60d after closure): ${esc(lastCleanup)}</p>` : ''}
+      <nav class="adminnav"><a class="btn small" href="/admin/campaigns">Campaigns</a><a class="btn small" href="/admin/releases">Releases</a><a class="btn small" href="/admin/claims">Claims</a><a class="btn small" href="/admin/earnings">Earnings</a><a class="btn small" href="/admin/users">Users</a><a class="btn small" href="/admin/conversions">Conversions &amp; Postbacks</a><a class="btn small" href="/admin/withdrawals">Withdrawals</a><a class="btn small" href="/admin/settings">Settings</a><a class="btn small ghost" href="/admin/password">Change Password</a></nav>
       <form method="post" action="/admin/import"><button class="btn" type="submit">Import campaigns from ALL feeds now</button></form>
       <form method="post" action="/admin/reconcile"><button class="btn ghost" type="submit">Run reconciliation check</button></form>`));
   }
@@ -649,6 +733,32 @@ async function adminRoutes(req, res, p, url, user) {
       }
     }
     return redirect(res, '/admin/claims');
+  }
+  // ---- Change own admin password (V4) — inline errors, session stays alive.
+  // Note: ADMIN_PASSWORD env re-syncs on boot (see ensureAdmin), so after a
+  // panel change the env should be updated too, warna restart par env wala
+  // password wapas lag jayega.
+  const passwordForm = (errs = {}, done = false) => `<h1>Change Password</h1>
+    ${done ? '<p class="notice">✅ Password change ho gaya. Isi password se ab login hoga.<br><span class="muted">Note: server restart par ADMIN_PASSWORD env wala password dobara sync ho jata hai — env bhi update kar dena.</span></p>' : ''}
+    <form class="card form" method="post" action="/admin/password">
+    <label>Current password<input name="current" type="password" required autocomplete="current-password"${inv(errs, 'current')}>${ferr(errs, 'current')}</label>
+    <label>New password (kam se kam 8 characters)<input name="next" type="password" required minlength="8" autocomplete="new-password"${inv(errs, 'next')}>${ferr(errs, 'next')}</label>
+    <label>New password dobara likho<input name="confirm" type="password" required autocomplete="new-password"${inv(errs, 'confirm')}>${ferr(errs, 'confirm')}</label>
+    <button class="btn" type="submit">Password Change Karo</button></form>
+    <p><a href="/admin">← Admin Dashboard</a></p>`;
+  if (p === '/admin/password' && req.method === 'GET') {
+    return html(res, 200, await L('Change Password', passwordForm()));
+  }
+  if (p === '/admin/password' && req.method === 'POST') {
+    const b = await readBody(req);
+    const me = await db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    const errs = {};
+    if (!verifyPassword(b.current || '', me.pass_hash)) errs.current = 'Current password galat hai.';
+    if (!b.next || String(b.next).length < 8) errs.next = 'New password kam se kam 8 characters ka rakho.';
+    else if (b.next !== b.confirm) errs.confirm = 'Dono new password match nahi ho rahe.';
+    if (Object.keys(errs).length) return html(res, 200, await L('Change Password', passwordForm(errs)));
+    await db.prepare('UPDATE users SET pass_hash=? WHERE id=?').run(hashPassword(b.next), user.id);
+    return html(res, 200, await L('Change Password', passwordForm({}, true)));
   }
   // ---- Earnings (ADMIN ONLY — upstream payout & margin kabhi public nahi) ----
   if (p === '/admin/earnings' && req.method === 'GET') {

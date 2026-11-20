@@ -1,10 +1,12 @@
-# Campaign Website — V3
+# Campaign Website — V4
 
 Live campaigns → user completes → reward lands in an in-site **wallet**: Pending → **Approved (release pending)** → admin manually releases on/after the expected credit date → Withdrawable → withdrawal to UPI / bank / gift card, approved by admin.
 
 V2 additions: auto pricing from upstream payout (admin margin rule), multi-feed auto import with auto-hide, custom/referral-link campaigns with manual claims (fixed or random reward), manual wallet release with expected credit dates, admin Earnings summary, and MMP-style app-event postbacks (install/register/kyc) advancing the same timeline.
 
 V3 additions: **Postgres storage for production** (Supabase) — because Render Free's filesystem is ephemeral and a SQLite file would be wiped on every restart, losing wallet/money data — plus **automatic data retention** (raw tracking data purged at 30 days; financial records only 60 days after their case fully closes, and never while an account holds a balance or an open state).
+
+V4 additions: **full UI redesign** (warm off-white paper background, deep-green header/buttons, one amber accent — no neon, no gradients; hero + "kaise kaam karta hai" 3-step strip on home, reward panels, designed empty states, stat tiles in dashboard/admin), **inline form errors** (galat email/password par alag error page nahi khulta — wahi form wapas aata hai, galat field ke neeche laal message aur laal border, email bhara rehta hai, password kabhi wapas nahi dikhta; yahi pattern signup, withdraw aur claim par bhi), aur **admin password management** (neeche dekho).
 
 Stack: Node.js 24, server-rendered HTML, phone-first CSS. One dependency (`pg`, pure JS). Runs the same on x86 and ARM64.
 
@@ -46,7 +48,7 @@ Runs once on boot and then daily (`src/retention.js`); the admin dashboard shows
 | `DB_PATH` | SQLite file (only when `DATABASE_URL` is empty), default `./data/app.db` |
 | `SEED_DEMO` | `true` only for local demo |
 | `POSTBACK_SECRET` | shared secret networks must send with postbacks |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | admin account auto-created on first boot |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | admin account auto-created on first boot; **har boot par env se sync** hota hai — env password badal kar restart karne se admin password badal jata hai |
 | `NETWORK_FEED_URL` / `NETWORK_FEED_TOKEN` | legacy single feed (server-side only) — first boot par Admin → Settings ki multi-feed list me migrate ho jata hai; naye feeds wahi se add hote hain |
 | `COOKIE_SECURE` | `true` behind HTTPS |
 
@@ -112,3 +114,5 @@ Note: a real Oracle Cloud account signup needs a card for verification — if th
 ## Admin
 
 `/admin` (login with the admin account): Campaigns CRUD + live on/off (type Network/Custom, fixed/random reward, credit-days override, reward lock), **Releases** (single + bulk-due), **Claims** (approve/reject with reason), **Earnings**, Users, Conversions & Postback Log, Withdrawals approve (marks paid) / reject (auto-refunds wallet), Settings — referral %, minimum withdrawal, **user share %**, **credit days**, multi-feed list, postback secret (all shown masked, server-side only).
+
+**Admin password:** do tareeke hain. (1) **Env sync:** `ADMIN_PASSWORD` har boot par admin account par sync hota hai — env badlo + restart = naya password. (2) **Panel:** Admin → **Change Password** (current password chahiye, galti par wahi page par laal error; session logout nahi hota). ⚠️ Dhyaan: panel se password badalne ke baad env bhi update kar dena — warna agle restart/deploy par env wala purana password dobara sync ho jayega.

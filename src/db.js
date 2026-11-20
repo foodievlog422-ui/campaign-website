@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
-import { hashPassword, randomCode } from './lib.js';
+import { hashPassword, verifyPassword, randomCode } from './lib.js';
 
 // ---------------------------------------------------------------------------
 // V3 data layer: ONE async facade, two engines.
@@ -406,12 +406,26 @@ export async function seedDemo(db) {
   for (const d of demo) await db.run(sql, ...d);
 }
 
+// Admin bootstrap + ENV SYNC (V4): when ADMIN_EMAIL/ADMIN_PASSWORD are set,
+// the env is the source of truth on every boot — the admin account is created
+// if missing, and its password hash is updated whenever the env password
+// differs from the stored one. So changing ADMIN_PASSWORD in the environment
+// + restarting changes the admin password. (The admin can also change the
+// password from the panel; note a later restart re-syncs it to the env value,
+// so update the env too after a panel change.)
 export async function ensureAdmin(db) {
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
   if (!email || !password) return;
-  const existing = await db.get('SELECT id FROM users WHERE email=?', email.toLowerCase());
-  if (existing) { await db.run('UPDATE users SET is_admin=1 WHERE id=?', existing.id); return; }
+  const em = email.toLowerCase();
+  const existing = await db.get('SELECT id, pass_hash FROM users WHERE email=?', em);
+  if (existing) {
+    await db.run('UPDATE users SET is_admin=1 WHERE id=?', existing.id);
+    if (!verifyPassword(password, existing.pass_hash)) {
+      await db.run('UPDATE users SET pass_hash=? WHERE id=?', hashPassword(password), existing.id);
+    }
+    return;
+  }
   await db.run('INSERT INTO users(name,email,pass_hash,referral_code,is_admin) VALUES(?,?,?,?,1)',
-    'Admin', email.toLowerCase(), hashPassword(password), randomCode(8));
+    'Admin', em, hashPassword(password), randomCode(8));
 }

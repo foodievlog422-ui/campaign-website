@@ -240,6 +240,81 @@ try {
   const custSeg = custIdx >= 0 ? adminCamps.text.slice(custIdx, custIdx + 700) : '';
   check('8e4 custom campaign (no upstream payout) shows payout + margin as — in admin list', custSeg.includes('Company payout: <b>—</b>') && custSeg.includes('Margin: <b>—</b>'), custSeg ? '' : 'custom card not found');
 
+  // ---------- V4 tests: inline form errors, admin password ----------
+  // 9a. Wrong password -> SAME login page (200) with red inline errors, no separate error page
+  const badLogin = await anon.post('/login', { email: 'user@test.local', password: 'wrongpass999' });
+  check('9a1 wrong password -> SAME login page re-rendered (200), form present', badLogin.status === 200 && badLogin.text.includes('action="/login"') && badLogin.text.includes('name="password"'));
+  check('9a2 red error under BOTH email and password fields + red borders', (badLogin.text.match(/class="ferr"/g) || []).length >= 2 && badLogin.text.includes('Email ya password galat hai') && badLogin.text.includes('class="invalid"'));
+  check('9a3 email preserved, wrong password never echoed back', badLogin.text.includes('value="user@test.local"') && !badLogin.text.includes('wrongpass999'));
+  const ghostLogin = await anon.post('/login', { email: 'ghost@test.local', password: 'whatever123' });
+  check('9a4 unknown email -> same generic inline error (no account-existence leak)', ghostLogin.status === 200 && ghostLogin.text.includes('Email ya password galat hai'));
+
+  // 9b. Signup inline errors
+  const badSu = await anon.post('/signup', { name: 'Short Pass', email: 'short@test.local', password: 'abc123' });
+  check('9b1 signup short password -> same form + inline red error, name/email kept, password not echoed', badSu.status === 200 && badSu.text.includes('action="/signup"') && badSu.text.includes('kam se kam 8 characters') && badSu.text.includes('value="short@test.local"') && badSu.text.includes('value="Short Pass"') && !badSu.text.includes('abc123'));
+  const dupSu = await anon.post('/signup', { name: 'Dup User', email: 'user@test.local', password: 'password123' });
+  check('9b2 duplicate email -> inline error under email field on signup form', dupSu.status === 200 && dupSu.text.includes('pehle se hai') && dupSu.text.includes('class="invalid"'));
+
+  // 9c. Withdraw inline errors on the wallet page itself
+  const badWd = await user.post('/wallet/withdraw', { amount: '99999', method: 'upi', destination: 'mine@okupi' });
+  check('9c1 withdraw over balance -> SAME wallet page (200) with red error', badWd.status === 200 && badWd.text.includes('action="/wallet/withdraw"') && badWd.text.includes('class="ferr"') && badWd.text.includes('Withdrawable balance sirf'));
+  check('9c2 entered amount + destination preserved on error', badWd.text.includes('value="99999"') && badWd.text.includes('value="mine@okupi"'));
+  const lowWd = await user.post('/wallet/withdraw', { amount: '10', method: 'upi', destination: 'mine@okupi' });
+  check('9c3 withdraw below minimum -> inline minimum error', lowWd.status === 200 && lowWd.text.includes('Minimum withdrawal'));
+
+  // 9d. Claim with empty note -> back on the progress page, red error under the note field
+  const startC3 = await user.post(`/campaign/${custom.id}/start`);
+  const clickC3 = (startC3.headers.get('location') || '').split('/').pop();
+  const emptyClaim = await user.post(`/my/campaigns/${clickC3}/claim`, { note: '   ', proof_url: '' });
+  const claimErrPage = await user.get(emptyClaim.headers.get('location') || `/my/campaigns/${clickC3}`);
+  check('9d1 empty claim note -> progress page with red error under note field', emptyClaim.status === 302 && (emptyClaim.headers.get('location') || '').includes('claim_error=note') && claimErrPage.text.includes('Note likhna zaroori hai') && claimErrPage.text.includes('class="invalid"'));
+
+  // 9e. Admin change password (panel) — inline errors, session kept
+  const pwPage = await admin.get('/admin/password');
+  check('9e1 admin change-password page exists', pwPage.status === 200 && pwPage.text.includes('name="current"') && pwPage.text.includes('name="next"') && pwPage.text.includes('name="confirm"'));
+  const pwWrong = await admin.post('/admin/password', { current: 'nopewrong1', next: 'newadminpass456', confirm: 'newadminpass456' });
+  check('9e2 wrong current password -> inline red error, same page', pwWrong.status === 200 && pwWrong.text.includes('Current password galat hai') && pwWrong.text.includes('class="invalid"'));
+  const pwMismatch = await admin.post('/admin/password', { current: 'adminpass123', next: 'newadminpass456', confirm: 'different789x' });
+  check('9e3 mismatched confirm -> inline error', pwMismatch.status === 200 && pwMismatch.text.includes('match nahi'));
+  const pwOk = await admin.post('/admin/password', { current: 'adminpass123', next: 'newadminpass456', confirm: 'newadminpass456' });
+  check('9e4 password change succeeds with confirmation on same page', pwOk.status === 200 && pwOk.text.includes('Password change ho gaya'));
+  const adminStill = await admin.get('/admin');
+  check('9e5 existing admin session stays logged in after change', adminStill.status === 200 && adminStill.text.includes('Admin Dashboard'));
+  const oldTry = new Client();
+  const oldLogin = await oldTry.post('/login', { email: 'admin@test.local', password: 'adminpass123' });
+  check('9e6 old password stops working (inline login error)', oldLogin.status === 200 && oldLogin.text.includes('galat hai'));
+  const newTry = new Client();
+  const newLogin = await newTry.post('/login', { email: 'admin@test.local', password: 'newadminpass456' });
+  check('9e7 new password logs in', newLogin.status === 302);
+  await newTry.post('/admin/password', { current: 'newadminpass456', next: 'adminpass123', confirm: 'adminpass123' }); // restore for tidiness
+
+  // 9f. Admin password ENV SYNC: boot with password A, restart with B -> B works, A fails
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-sync-'));
+  const bootSyncServer = async (pw) => {
+    const env2 = { ...process.env, PORT: '3219', DB_PATH: path.join(tmp2, 'app.db'), SEED_DEMO: 'false', POSTBACK_SECRET: SECRET, ADMIN_EMAIL: 'boss@test.local', ADMIN_PASSWORD: pw, NODE_ENV: 'production' };
+    const srv = spawn('node', ['src/server.js'], { env: env2, stdio: ['ignore', 'pipe', 'pipe'] });
+    for (let i = 0; i < 60; i++) {
+      try { const r = await fetch('http://127.0.0.1:3219/health'); if (r.ok) return srv; } catch { await new Promise(r => setTimeout(r, 200)); }
+    }
+    srv.kill('SIGKILL');
+    throw new Error('sync server did not start');
+  };
+  const rawLogin = async (password) => {
+    const r = await fetch('http://127.0.0.1:3219/login', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ email: 'boss@test.local', password }).toString(), redirect: 'manual' });
+    return { status: r.status, text: await r.text() };
+  };
+  const srvA = await bootSyncServer('firstpass111');
+  const loginA = await rawLogin('firstpass111');
+  check('9f1 boot with env password A: A logs in', loginA.status === 302);
+  srvA.kill('SIGKILL');
+  await new Promise(r => setTimeout(r, 800));
+  const srvB = await bootSyncServer('secondpass222');
+  try {
+    const loginB = await rawLogin('secondpass222');
+    const loginA2 = await rawLogin('firstpass111');
+    check('9f2 restart with env password B: B works, A fails (env sync)', loginB.status === 302 && loginA2.status === 200 && loginA2.text.includes('galat hai'));
+  } finally { srvB.kill('SIGKILL'); }
+
   console.log(`\n${results.filter(r => r.startsWith('PASS')).length}/${results.length} passed`);
 } catch (err) {
   console.error('TEST RUN ERROR', err);
