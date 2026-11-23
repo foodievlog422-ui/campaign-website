@@ -32,6 +32,37 @@ const fmtDate = (iso) => {
   const d = new Date(iso + 'T00:00:00');
   return isNaN(d) ? iso : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 };
+// Short day label for sqlite datetime strings ('YYYY-MM-DD HH:MM:SS').
+const fmtDay = (ts) => {
+  if (!ts) return '';
+  const d = new Date(String(ts).replace(' ', 'T'));
+  return isNaN(d) ? '' : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+};
+// Inline SVG icons (Lucide-style, stroke=currentColor) — V6 design system.
+const ic = (paths, size = 16) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const I = {
+  shield: ic('<path d="M12 3l7 2.8V11c0 4.6-3 7.9-7 9.5C8 18.9 5 15.6 5 11V5.8z"/><path d="m9 11.5 2 2 4-4"/>'),
+  badge: ic('<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/>'),
+  wallet: ic('<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>'),
+  arrowR: ic('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>', 15),
+  arrowUR: ic('<path d="M7 7h10v10"/><path d="M7 17 17 7"/>', 13),
+  chevR: ic('<path d="m9 18 6-6-6-6"/>', 15),
+  back: ic('<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>', 13),
+  clock: ic('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  check: ic('<path d="M20 6 9 17l-5-5"/>', 13),
+  gift: ic('<rect x="3" y="8" width="18" height="4"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"/>', 17),
+  ext: ic('<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>', 15),
+  lock: ic('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>', 13),
+  spark: ic('<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>', 18),
+  arrowD: ic('<path d="M12 4v16"/><path d="m19 13-7 7-7-7"/>', 18),
+  menu: ic('<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>', 17),
+  users: ic('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-1.5A4.5 4.5 0 0 1 7 14h4a4.5 4.5 0 0 1 4.5 4.5V20"/><path d="M16 5a3.5 3.5 0 0 1 0 6.5"/><path d="M21.5 20v-1.5a4.5 4.5 0 0 0-3-4.3"/>'),
+  clip: ic('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
+  refresh: ic('<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>', 12),
+  download: ic('<path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 21h16"/>', 12),
+  sliders: ic('<path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/>', 15),
+  help: ic('<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.6-3 4"/><path d="M12 17h.01"/>', 14),
+};
 
 // Moves an APPROVED conversion's money into the "Approved — release pending"
 // bucket (user.approved_paise) and holds the referral commission the same way.
@@ -163,16 +194,22 @@ async function startSession(res, userId, remember) {
   return cookieHeader('sid', token, remember ? { maxAge: 30 * 86400 } : {});
 }
 
-async function layout(user, title, body) {
+async function layout(user, title, body, opts = {}) {
   const site = esc(await getSetting(db, 'site_name', 'CampaignWala'));
-  const nav = user
-    ? `<span class="who">${esc(user.name)}</span><a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}<form method="post" action="/logout" class="inline"><button class="linkbtn" type="submit">Logout</button></form>`
-    : `<a href="/login">Login</a><a class="btn small" href="/signup">Sign up</a>`;
+  const firstName = user ? esc(String(user.name || '').trim().split(/\s+/)[0]) : '';
+  const memberLinks = user ? `<a href="/my">My Dashboard</a><a href="/wallet">${I.wallet}Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}` : '';
+  const nav = `<a href="/#campaigns">Campaigns</a><a href="/#how-it-works">How it works</a>${memberLinks}`;
+  const actions = user
+    ? `<span class="hi">Hi, ${firstName}</span><form method="post" action="/logout" class="inline"><button class="btn-logout" type="submit">Log out</button></form>`
+    : `<a class="login-link" href="/login">Login</a><a class="btn small" href="/signup">Sign up <span aria-hidden="true">↗</span></a>`;
+  const mnav = `<details class="mmenu"><summary aria-label="Open navigation">${I.menu}</summary><nav>
+    <a href="/#campaigns">Campaigns</a><a href="/#how-it-works">How it works</a>${user ? '<a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>' + (user.is_admin ? '<a href="/admin">Admin</a>' : '') : '<a href="/login">Login</a><a href="/signup">Sign up</a>'}
+  </nav></details>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · ${site}</title><meta name="mitgo-verification" content="e97a990a-6417-4648-983f-b821ae013a95"><meta name="mylead-verification" content="ba856886239dedcc56ca0541621fdb50"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css"></head><body>
-<header><div class="wrap head"><a class="logo" href="/"><span class="mark">₹</span>${site}</a><nav>${nav}</nav></div></header>
-<main class="wrap">${body}</main>
-<footer><div class="wrap foot"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a><a href="https://t.me/+66DYjnIvwVYwMjBl" target="_blank" rel="noopener">Join our Telegram Channel</a></div></footer>
+<header class="site"><div class="wrap-wide head"><a class="logo" href="/" aria-label="${site} home"><span class="mark">₹</span>${site}</a><nav class="main" aria-label="Main navigation">${nav}</nav><div class="head-actions">${actions}${mnav}</div></div></header>
+${opts.raw ? `<main>${body}</main>` : `<main><div class="wrap page">${body}</div></main>`}
+<footer class="site"><div class="wrap-wide foot"><a class="flogo" href="/"><span class="mark">₹</span>${site}</a><nav aria-label="Legal"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a><a href="https://t.me/+66DYjnIvwVYwMjBl" target="_blank" rel="noopener">Join our Telegram Channel ${I.arrowUR}</a></nav><span class="copy">© 2026 ${site}</span></div></footer>
 </body></html>`;
 }
 
@@ -210,13 +247,23 @@ function signupForm({ name = '', email = '', phone = '', ref = '', errs = {}, re
     <button class="btn block" type="submit">Sign up</button></form>
   <p class="muted center">Pehle se account hai? <a href="/login">Login karo</a></p></section></div>`;
 }
-function timelineHtml(click) {
+function stepperHtml(click) {
   const items = STAGES.map((label, i) => {
     const done = i <= click.stage && click.conv_status !== 'rejected';
     const rejectedNote = click.conv_status === 'rejected' && i === 5;
-    return `<li class="${done ? 'done' : 'todo'} ${rejectedNote ? 'bad' : ''}"><span class="dot">${done ? '✓' : i + 1}</span><span>${esc(label)}${rejectedNote ? ' — Rejected by partner' : ''}</span></li>`;
+    const cls = rejectedNote ? 'bad' : done ? 'done' : (i === click.stage + 1 && click.conv_status !== 'rejected' ? 'current' : '');
+    const inner = rejectedNote ? '✕' : done ? '✓' : i + 1;
+    return `<li class="${cls}"><span class="sdot">${inner}</span><span class="slbl">${esc(label)}${rejectedNote ? ' — Rejected by partner' : ''}</span></li>`;
   }).join('');
-  return `<ol class="timeline">${items}</ol>`;
+  return `<ol class="stepper">${items}</ol>`;
+}
+// Friendly status pill for a user's campaign (dashboard rows + progress head).
+function statusPill(cl) {
+  if (cl.conv_status === 'rejected' || cl.conv_status === 'claim_rejected') return '<span class="pill red">Rejected</span>';
+  if (cl.stage >= 6) return '<span class="pill black">Credited</span>';
+  if (cl.conv_status === 'approved') return '<span class="pill black">Approved</span>';
+  if (cl.conv_status === 'claim_submitted') return '<span class="pill grey">Claim in review</span>';
+  return '<span class="pill grey">In review</span>';
 }
 const publicList = async () => (await db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all()).map(publicCampaign);
 
@@ -257,39 +304,61 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/' && req.method === 'GET') {
-      const cards = (await publicList()).map(c => `<article class="card camp"><div class="icon">${esc(c.icon_text)}</div>
-        <div class="grow"><h3>${esc(c.title)} <span class="cat-chip">${esc(c.category)}</span></h3><p class="meta">${esc(c.geo)} · Live</p><p class="desc">${esc(c.description)}</p></div>
-        <div class="reward"><span><span class="get">You get</span><br>${esc(rewardLabel(c))}</span><a class="btn small" href="/campaign/${c.id}">Details</a></div></article>`).join('');
-      const empty = `<div class="card empty"><div class="ring">₹</div><h3>Campaigns jald aa rahe hain</h3>
+      const list = await publicList();
+      const rows = list.map(c => `<article class="camp-row"><div class="icon">${esc(c.icon_text)}</div>
+        <div class="grow"><h3>${esc(c.title)}</h3><span class="cat-chip">${esc(c.category)}</span><p class="desc">${esc(c.description)}</p><p class="meta">${esc(c.geo)} <span style="color:#c4c4c4">·</span> <span class="dotlive"></span> Live</p></div>
+        <div class="camp-side"><div><span class="get">You get</span><span class="amt">${esc(rewardLabel(c))}</span></div><a class="btn small ghost" href="/campaign/${c.id}">Details ${I.chevR}</a></div></article>`).join('');
+      const empty = `<div class="empty"><div class="ring">₹</div><h3>Campaigns jald aa rahe hain</h3>
         <p class="muted">Abhi naye campaigns taiyaar ho rahe hain. Thodi der me dobara check karo — achhe offers sabse pehle yahi dikhenge.</p>
-        ${user ? '' : '<p style="margin-top:14px"><a class="btn" href="/signup">Free account banao</a></p>'}</div>`;
+        ${user ? '' : '<p class="mt14"><a class="btn" href="/signup">Free account banao</a></p>'}</div>`;
+      const first = list[0];
+      const preview = `<div class="wprev-wrap"><span class="deco a"></span><span class="deco b"></span><div class="wprev">
+        <div class="wp-top"><div><span class="wp-label">Your campaign wallet</span><div class="wp-amt">₹1,250<small>earned</small></div></div><span class="wp-ic">${I.wallet}</span></div>
+        <div class="wp-prog"><b>Campaign progress</b><span>2 of 3 steps</span></div>
+        <div class="wp-bar"><i class="on"></i><i class="on"></i><i></i></div>
+        ${first ? `<div class="wp-row"><span class="icon" style="flex-basis:36px;width:36px;height:36px;font-size:12px;border-radius:8px">${esc(first.icon_text)}</span><div style="min-width:0"><p class="t">${esc(first.title)}</p><p class="s">KYC verification · In review</p></div><span class="a">${esc(rewardLabel(first))}</span></div>` : ''}
+        <div class="wp-next"><span class="tick">${I.check}</span> Next: partner approval</div></div>
+        <span class="float-badge"><i></i> Live tracking</span></div>`;
       return html(res, 200, await layout(user, 'Live Campaigns', `
-      <section class="hero"><h1>Campaigns complete karo, <span class="accent">paisa kamao.</span></h1>
-      <p class="lede">Simple tasks — app install, account open, KYC — complete karo. Reward pehle wallet me, phir UPI, bank ya gift card me withdraw karo.</p>
-      <div class="cta">${user ? '<a class="btn" href="/my">My Dashboard kholo</a><a class="btn ghost" href="/wallet">Wallet dekho</a>' : '<a class="btn" href="/signup">Free account banao</a><a class="btn ghost" href="/login">Login</a>'}</div>
-      <div class="trustline"><span class="tchip"><b>Wallet</b> me safe balance</span><span class="tchip">Har step ki <b>live tracking</b></span><span class="tchip">Withdraw <b>UPI / Bank / Gift Card</b></span></div></section>
-      <section class="steps">
-        <div class="step"><div class="num">1</div><h3>Campaign chuno</h3><p>Neeche live campaigns me se apne liye sahi offer chuno aur Start dabao.</p></div>
-        <div class="step"><div class="num">2</div><h3>Steps complete karo</h3><p>Har step ka status tumhari progress screen par live dikhta rahega.</p></div>
-        <div class="step"><div class="num">3</div><h3>Paisa withdraw karo</h3><p>Approval ke baad amount wallet me aayega — wahan se kabhi bhi withdraw karo.</p></div>
-      </section>
-      <div class="section-head"><h2>Live Campaigns</h2><span class="muted">Reward seedha wallet me</span></div>
-      ${cards || empty}`));
+      <section class="hero6"><div class="wrap-wide hero-grid"><div>
+        <span class="eyebrow">Campaigns · Rewards · You</span>
+        <h1>Campaigns complete karo, <span class="dim">paisa kamao.</span></h1>
+        <p class="lede">Apne favourite brands ke simple tasks poore karo. Har step track karo aur apni earning seedha wallet mein dekho.</p>
+        <div class="hero-cta">${user ? `<a class="btn" href="/my">My Dashboard ${I.arrowR}</a><a class="btn ghost" href="/wallet">Wallet dekho</a>` : `<a class="btn" href="/signup">Free account banao ${I.arrowR}</a><a class="btn ghost" href="/login">Login</a>`}</div>
+        <div class="trustrow"><span>${I.shield} Wallet mein safe balance</span><span>${I.badge} Har step ki live tracking</span><span>${I.wallet} UPI · Bank · Gift Card</span></div>
+      </div>${preview}</div></section>
+      <section class="how" id="how-it-works"><div class="wrap-wide">
+        <div class="how-head"><div class="sec-head"><span class="eyebrow">Simple as 1 · 2 · 3</span><h2>Kaise kaam karta hai</h2><p>Bas teen simple steps. Progress aur reward ki har update tumhare dashboard par.</p></div><a class="shuru" href="${user ? '/my' : '/signup'}">Shuru karo ${I.arrowUR}</a></div>
+        <div class="steps3">
+          <article class="step3"><div class="row"><span class="sicon">${I.spark}</span><span class="snum">01</span></div><h3>Campaign chuno</h3><p>Apne liye sahi offer dekho aur uske steps samjho.</p></article>
+          <article class="step3"><div class="row"><span class="sicon">${I.check}</span><span class="snum">02</span></div><h3>Steps complete karo</h3><p>Partner ki site ya app par task poora karo. Hum progress track karenge.</p></article>
+          <article class="step3"><div class="row"><span class="sicon">${I.arrowD}</span><span class="snum">03</span></div><h3>Paisa withdraw karo</h3><p>Approval ke baad reward wallet mein aayega. UPI ya bank se nikaalo.</p></article>
+        </div></div></section>
+      <section class="campsec" id="campaigns"><div class="wrap-wide">
+        <div class="campsec-head"><div class="sec-head flush"><span class="eyebrow">Hand-picked for you</span><h2>Live Campaigns</h2><p>Naye offers aate rehte hain — apna next reward dhoondo.</p></div>${list.length ? `<span class="livepill"><i></i> ${list.length} campaigns live</span>` : ''}</div>
+        <div class="camp-list">${rows || empty}</div>
+        <p class="locknote">${I.lock} Campaign terms apply. Rewards are credited after partner verification.</p>
+      </div></section>
+      <section class="ctaband"><div class="wrap-wide"><div class="band"><div><p class="kicker">Your next reward is waiting</p><h2>Ready to get started?</h2></div>${user ? `<a class="btn white" href="/my">Go to dashboard ${I.arrowR}</a>` : `<a class="btn white" href="/signup">Create free account ${I.arrowR}</a>`}</div></div></section>`, { raw: true }));
     }
     if (p.startsWith('/campaign/') && req.method === 'GET') {
       const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[2]);
       if (!c) return html(res, 404, await layout(user, 'Not found', '<h1>Campaign not found</h1>'));
       const pub = publicCampaign(c);
-      return html(res, 200, await layout(user, pub.title, `<article class="card"><div style="display:flex;gap:14px;align-items:flex-start"><div class="icon big">${esc(pub.icon_text)}</div>
-        <div class="grow"><h1 style="margin-bottom:4px">${esc(pub.title)}</h1><p class="meta" style="margin:0"><span class="cat-chip">${esc(pub.category)}</span> · ${esc(pub.geo)}</p></div></div>
-        <p style="margin-top:12px">${esc(pub.description)}</p>
-        <div class="reward-panel"><p class="muted" style="margin:0 0 2px">Campaign complete karne par tumhe milega</p><p class="bigreward">${esc(rewardLabel(pub))}</p>
-        ${pub.reward_mode === 'random' ? '<p class="muted" style="margin:6px 0 0">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}</div>
-        ${pub.campaign_type === 'custom' ? '<p class="muted">Yeh manual verification campaign hai: Start karke link se task complete karo, phir apni progress page se claim submit karo. Admin verify karke approve karega.</p>' : ''}
-        <h2>Steps — aise complete hoga</h2><ol class="steps-list">${pub.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
-        <h2>Rules</h2><div class="rules-box">${esc(pub.rules)}</div>
-        <div style="margin-top:18px">${user ? `<form method="post" action="/campaign/${pub.id}/start"><button class="btn block" type="submit">Start Campaign</button></form>` : '<a class="btn block" href="/login">Login karke start karo</a>'}</div>
-        </article>`));
+      return html(res, 200, await layout(user, pub.title, `
+        <a class="backlink" href="/#campaigns">${I.back} All campaigns</a>
+        <div class="detail-head"><div class="icon big">${esc(pub.icon_text)}</div>
+          <div style="min-width:0;flex:1"><h1>${esc(pub.title)}</h1><span class="cat-chip" style="margin-left:0">${esc(pub.category)}</span><p class="meta">${esc(pub.geo)} <span style="color:#bbb">·</span> <span class="dotlive"></span> Live now</p></div></div>
+        <p style="margin-top:28px;font-size:14.5px;line-height:1.75;color:#666">${esc(pub.description)} We'll keep you updated as each step is verified.</p>
+        <div class="reward-band"><div><p class="lbl">Campaign complete karne par tumhe milega</p><p class="amt">${esc(rewardLabel(pub))}</p>
+        ${pub.reward_mode === 'random' ? '<p class="muted small" style="margin:6px 0 0">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}</div>
+        <span class="when">${I.clock} Partner verification ke baad</span></div>
+        ${pub.campaign_type === 'custom' ? '<p class="notebox">Yeh manual verification campaign hai. Task ke baad apni details submit karo — team claim review karegi. Start karke link se task complete karo, phir apni progress page se claim submit karo.</p>' : ''}
+        <h2 style="font-size:16px;margin-top:36px">Steps — aise complete hoga</h2><ol class="steps-list2">${pub.steps.map((s, i) => `<li><span class="n">${i + 1}</span><span class="t">${esc(s)}</span></li>`).join('')}</ol>
+        <section class="rules2"><h2>Campaign rules</h2><ul>${String(pub.rules || '').split('\n').map(r => r.trim()).filter(Boolean).map(r => `<li>${esc(r)}</li>`).join('')}</ul></section>
+        <div class="startcard"><div class="row"><span class="sic">${I.shield}</span><div><p class="t">Your progress stays transparent</p><p class="s">Campaign start karne ke baad har update tumhari progress timeline mein dikhegi.</p></div></div>
+        ${user ? `<form method="post" action="/campaign/${pub.id}/start" style="margin-top:16px"><button class="btn block tall" type="submit">Start Campaign ${I.arrowR}</button></form>` : `<a class="btn block tall" href="/login" style="margin-top:16px">Login karke start karo ${I.arrowR}</a>`}
+        <p class="fineprint">Start karne par partner ki website naye tab mein khulegi.</p></div>`));
     }
     if (p.match(/^\/campaign\/\d+\/start$/) && req.method === 'POST') {
       if (!user) return redirect(res, '/login');
@@ -353,25 +422,41 @@ const server = http.createServer(async (req, res) => {
     // User area
     if (p === '/my' && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
-      const mine = await db.prepare('SELECT cl.*, c.title FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.user_id=? ORDER BY cl.id DESC').all(user.id);
-      const list = mine.map(cl => `<article class="card"><h3>${esc(cl.title)}</h3><p class="muted">Status: ${esc(cl.conv_status)} · Stage: ${esc(STAGES[cl.stage])}</p><a class="btn small" href="/my/campaigns/${esc(cl.click_id)}">Progress dekho</a></article>`).join('');
+      const mine = await db.prepare('SELECT cl.*, c.title, c.icon_text, c.user_reward_paise, c.reward_mode, c.reward_min_paise, c.reward_max_paise FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.user_id=? ORDER BY cl.id DESC').all(user.id);
+      const list = mine.map(cl => `<a class="mycamp-row" href="/my/campaigns/${esc(cl.click_id)}"><span class="icon" style="flex-basis:40px;width:40px;height:40px;font-size:11px;border-radius:8px">${esc(cl.icon_text || 'C')}</span>
+        <span style="min-width:0;flex:1"><span class="t">${esc(cl.title)}</span><span class="s">Started ${esc(fmtDay(cl.created_at))} · ${esc(STAGES[cl.stage])}</span></span>
+        <span class="right">${statusPill(cl)}<span class="amt">${esc(rewardLabel(cl))}</span>${I.chevR}</span></a>`).join('');
       const proto = req.headers['x-forwarded-proto'] || 'http';
       const refLink = `${proto}://${req.headers.host}/r/${user.referral_code}`;
-      return html(res, 200, await layout(user, 'My Dashboard', `<h1>My Dashboard</h1>
-        <h2 style="margin-top:4px">Wallet</h2>
-        <div class="stats">
-          <div class="stat"><p class="stat-line">Pending: <b>${inr(user.pending_paise)}</b></p><p class="hint">Partner approval ka wait ho raha hai</p></div>
-          <div class="stat"><p class="stat-line">Approved (release pending): <b>${inr(user.approved_paise)}</b></p><p class="hint">Approve ho gaya — admin expected date par release karega</p></div>
-          <div class="stat"><p class="stat-line">Withdrawable: <b>${inr(user.withdrawable_paise)}</b></p><p class="hint">Yeh paisa abhi withdraw kar sakte ho</p></div>
-        </div>
-        <p style="margin:0 0 6px"><a class="btn" href="/wallet">Wallet kholo — withdraw karo</a></p>
-        <section class="card"><h2>Refer &amp; Earn</h2><p class="muted">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${esc(await getSetting(db, 'referral_percent', '10'))}% commission milega.</p><p class="reflink">${esc(refLink)}</p><p class="muted">Code: ${esc(user.referral_code)}</p></section>
-        <h2>My Campaigns</h2>${list || '<div class="card empty"><div class="ring">₹</div><h3>Abhi koi campaign start nahi kiya</h3><p class="muted">Home page se koi live campaign chuno aur Start dabao — progress yahi dikhega.</p><p style="margin-top:12px"><a class="btn small" href="/">Campaigns dekho</a></p></div>'}`));
+      const refPct = esc(await getSetting(db, 'referral_percent', '10'));
+      const refEarned = ((await db.prepare("SELECT COALESCE(SUM(amount_paise),0) v FROM wallet_ledger WHERE user_id=? AND kind IN ('referral_pending_release','referral_credit')").get(user.id)) || {}).v || 0;
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const hr = nowIST.getHours();
+      const greetWord = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+      const dateLine = nowIST.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+      const firstName = esc(String(user.name || '').trim().split(/\s+/)[0]);
+      return html(res, 200, await layout(user, 'My Dashboard', `
+        <div class="dash-head"><div><p class="greet-date">${esc(dateLine)}</p><h1 class="greet">${greetWord}, ${firstName}<span class="dot">.</span></h1><p class="muted" style="margin:8px 0 0;font-size:12.5px">Yahan se apne campaigns aur earnings track karo.</p></div>
+        <a class="btn" href="/#campaigns">Explore campaigns ${I.arrowR}</a></div>
+        <section class="balances" aria-label="Wallet balances">
+          <article class="bal"><div class="top"><span class="lbl">Pending</span><span class="bic">${I.clock}</span></div><p class="amt">${inr(user.pending_paise)}</p><p class="hint">Partner approval ka wait ho raha hai</p></article>
+          <article class="bal"><div class="top"><span class="lbl">Approved · release pending</span><span class="bic">${I.check}</span></div><p class="amt">${inr(user.approved_paise)}</p><p class="hint">Approve ho gaya — admin expected date par release karega</p></article>
+          <article class="bal dark"><div class="top"><span class="lbl">Withdrawable</span><span class="bic">${I.wallet}</span></div><p class="amt">${inr(user.withdrawable_paise)}</p><p class="hint">Yeh paisa abhi withdraw kar sakte ho</p></article>
+        </section>
+        <p class="sr-only">Pending: <b>${inr(user.pending_paise)}</b> · Approved (release pending): <b>${inr(user.approved_paise)}</b> · Withdrawable: <b>${inr(user.withdrawable_paise)}</b></p>
+        <div class="openwallet"><a href="/wallet">Open wallet ${I.arrowUR}</a></div>
+        <section class="refpanel"><div class="row"><div class="who"><span class="gic">${I.gift}</span><div><h2>Refer &amp; earn</h2><p class="sub">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${refPct}% commission milega.</p></div></div>
+        <div class="earn"><p class="earn-lbl">Referral earnings</p><p class="earn-amt">${inr(refEarned)}</p></div></div>
+        <div class="refbox"><span class="lnk" id="refLink">${esc(refLink)}</span><button class="copybtn" type="button" id="copyRef">Copy link</button></div>
+        <p class="muted small" style="margin:10px 0 0">Code: ${esc(user.referral_code)}</p></section>
+        <div class="mycamp-head"><div><p class="kick">Your activity</p><h2>My Campaigns ${mine.length ? `<span class="cnt">(${mine.length})</span>` : ''}</h2></div><a href="/#campaigns">Browse all ${I.chevR}</a></div>
+        ${list ? `<div class="mycamp-list">${list}</div>` : '<div class="empty"><div class="ring">₹</div><h3>Abhi koi campaign start nahi kiya</h3><p class="muted">Home page se koi live campaign chuno aur Start dabao — progress yahi dikhega.</p><p style="margin-top:12px"><a class="btn small" href="/#campaigns">Campaigns dekho</a></p></div>'}
+        <script>document.getElementById('copyRef').addEventListener('click',function(){var t=document.getElementById('refLink').textContent;var b=this;function ok(){b.textContent='Copied ✓';setTimeout(function(){b.textContent='Copy link'},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok).catch(ok)}else{ok()}});</script>`));
     }
     if (p.startsWith('/my/campaigns/') && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
       const clickId = p.split('/')[3];
-      const cl = await db.prepare('SELECT cl.*, c.title, c.user_reward_paise, c.campaign_type, c.reward_mode, c.reward_min_paise, c.reward_max_paise, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
+      const cl = await db.prepare('SELECT cl.*, c.title, c.icon_text, c.user_reward_paise, c.campaign_type, c.reward_mode, c.reward_min_paise, c.reward_max_paise, c.link_url FROM clicks cl JOIN campaigns c ON c.id=cl.campaign_id WHERE cl.click_id=? AND cl.user_id=?').get(clickId, user.id);
       if (!cl) return html(res, 404, await layout(user, 'Not found', '<h1>Not found</h1>'));
       const conv = await db.prepare('SELECT * FROM conversions WHERE click_id=?').get(clickId);
       const claim = await db.prepare('SELECT * FROM claims WHERE click_id=?').get(clickId);
@@ -379,11 +464,18 @@ const server = http.createServer(async (req, res) => {
         ? inr(claim.rolled_reward_paise)
         : esc(rewardLabel(cl));
       let extra = '';
-      if (cl.link_url) extra += `<p><a class="btn" href="/go/${esc(cl.click_id)}" target="_blank" rel="noopener">Campaign kholo →</a></p>`;
-      if (conv && conv.status === 'approved' && !conv.released) {
-        extra += `<p class="notice">✅ Approved! Expected wallet credit date: <b id="creditDate">${esc(fmtDate(conv.expected_credit_date))}</b><br><span class="muted">Admin is date ke aas-paas amount release karega, tab woh Withdrawable hoga.</span></p>`;
+      // Status strip inside the stepper card — message follows the live state.
+      let strip;
+      if (cl.conv_status === 'rejected') {
+        strip = `<div class="status-strip"><span class="sic">${I.clock}</span><div style="flex:1"><p class="t">Campaign partner ne reject kar diya</p><p class="s">Rules check me kuch match nahi hua. Details ke liye Refund &amp; Rejection Policy dekho.</p></div></div>`;
+      } else if (conv && conv.released) {
+        strip = `<div class="status-strip"><span class="sic">${I.check}</span><div style="flex:1"><p class="t">Paisa wallet me credit ho gaya hai</p><p class="s">💰 Amount ab Withdrawable hai — <a href="/wallet">Wallet dekho</a></p></div></div>`;
+      } else if (conv && conv.status === 'approved' && !conv.released) {
+        strip = `<div class="status-strip"><span class="sic">${I.check}</span><div style="flex:1"><p class="t">✅ Approved! Partner ne confirm kar diya</p><p class="s">Expected wallet credit date: <b id="creditDate">${esc(fmtDate(conv.expected_credit_date))}</b> — admin is date ke aas-paas amount release karega, tab woh Withdrawable hoga.</p></div></div>`;
+      } else {
+        strip = `<div class="status-strip"><span class="sic">${I.clock}</span><div style="flex:1"><p class="t">Partner verification in progress</p><p class="s">Tumhara task submit ho gaya hai. Update milte hi timeline aage badhegi.</p></div><span class="when">Status: <span id="convStatus">${esc(cl.conv_status === 'none' ? 'started' : cl.conv_status)}</span></span></div>`;
       }
-      if (conv && conv.released) extra += `<p class="notice">💰 Paisa wallet me credit ho gaya hai — <a href="/wallet">Wallet dekho</a></p>`;
+      if (cl.link_url) extra += `<section class="partner-card"><div class="who"><span class="pic">${I.ext}</span><div><p class="t">Need to finish the partner task?</p><p class="s">Campaign open karo aur required steps complete karo.</p></div></div><a class="btn small ghost" href="/go/${esc(cl.click_id)}" target="_blank" rel="noopener">Open partner link ${I.ext}</a></section>`;
       if (cl.campaign_type === 'custom') {
         const claimErr = url.searchParams.get('claim_error') === 'note';
         const noteErrHtml = claimErr ? '<p class="ferr">Note likhna zaroori hai — kya kiya, kis number/ID se, short me likho.</p>' : '';
@@ -402,10 +494,14 @@ const server = http.createServer(async (req, res) => {
           <h2>Dobara claim karo</h2>${claimForm('Claim Dobara Submit Karo')}`;
         }
       }
-      return html(res, 200, await layout(user, 'Progress', `<article class="card"><h1>${esc(cl.title)}</h1>
-        <p class="muted">Reward: ${rewardText} · Status: <span id="convStatus">${esc(cl.conv_status)}</span></p>
-        <div id="timeline">${timelineHtml(cl)}</div>${extra}
-        <p class="muted">Yeh page har kuch seconds me khud update hota hai. Jo step ho gaya woh ✓, jo baki hai woh number me dikhega.</p></article>
+      return html(res, 200, await layout(user, 'Progress', `
+        <a class="backlink" href="/my" style="margin-bottom:0">${I.back} Back to dashboard</a>
+        <div class="prog-head"><div class="who"><span class="icon" style="flex-basis:44px;width:44px;height:44px;font-size:11px;border-radius:8px">${esc(cl.icon_text || 'C')}</span><div><p class="kick">Campaign progress</p><h1>${esc(cl.title)}</h1></div></div>${statusPill(cl)}</div>
+        <p class="muted" style="margin:14px 0 0">Reward: <b style="color:var(--ink)">${rewardText}</b></p>
+        <section class="stepper-card"><div class="sc-head"><div><p class="kick">Live timeline</p><h2>Your campaign journey</h2></div><span class="auto-note"><i></i> Updates automatically</span></div>
+        <div id="timeline">${stepperHtml(cl)}</div>${strip}</section>
+        ${extra}
+        <p style="display:flex;gap:8px;align-items:flex-start;font-size:10.5px;line-height:1.6;color:#878787;margin-top:16px">${I.shield}<span>Reward approval ke baad expected wallet credit date yahan dikhegi. Yeh page har kuch seconds me khud update hota hai — jo step ho gaya woh ✓, jo baki hai woh number me dikhega.</span></p>
         <script src="/app.js"></script><script>watchProgress(${JSON.stringify(clickId)})</script>`));
     }
     if (p.match(/^\/my\/campaigns\/[^/]+\/claim$/) && req.method === 'POST') {
@@ -457,17 +553,40 @@ const server = http.createServer(async (req, res) => {
         JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id
         WHERE cl.user_id=? AND cv.status='approved' AND cv.released=0 ORDER BY cv.expected_credit_date`).all(user.id);
       const sel = (m) => (vals.method === m ? ' selected' : '');
-      return layout(user, 'Wallet', `<h1>Wallet</h1><section class="card">
-        <p>Pending balance: <b>${inr(fresh.pending_paise)}</b> <span class="muted">(partner approval ka wait ho raha hai)</span></p>
-        <p>Approved (release pending): <b>${inr(fresh.approved_paise)}</b> <span class="muted">(approve ho gaya hai — admin expected date par release karega, tab withdrawable hoga)</span></p>
-        ${approvedList.map(a => `<p class="muted">• ${esc(a.title)} — ${inr(a.user_reward_paise)} · Expected credit: <b>${esc(fmtDate(a.expected_credit_date))}</b></p>`).join('')}
-        <p class="balance-line">Withdrawable balance: <b>${inr(fresh.withdrawable_paise)}</b></p>
-        <form class="form" method="post" action="/wallet/withdraw"><label>Amount (₹)<input name="amount" type="number" min="1" required value="${esc(vals.amount ?? '')}"${inv(errs, 'amount')}>${ferr(errs, 'amount')}</label>
-        <label>Method<select name="method"><option value="upi"${sel('upi')}>UPI</option><option value="bank"${sel('bank')}>Bank</option><option value="giftcard"${sel('giftcard')}>Gift Card</option></select></label>
-        <label>UPI ID / Bank details / Email<input name="destination" required value="${esc(vals.destination ?? '')}"${inv(errs, 'destination')}>${ferr(errs, 'destination')}</label>
-        <p class="muted">Minimum withdrawal: ${inr(min)}</p><button class="btn" type="submit">Request Withdrawal</button></form></section>
-        <h2>My Withdrawals</h2>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)} · Status: ${esc(w.status)}</article>`).join('') || '<p>Abhi koi withdrawal nahi.</p>'}
-        <h2>History</h2>${ledger.map(l => `<article class="card"><span>${esc(l.kind)}</span> <b>${inr(l.amount_paise)}</b> <span class="muted">${esc(l.created_at)}</span></article>`).join('') || '<p>No history yet.</p>'}`);
+      const kindMap = {
+        pending_credit: ['Campaign reward', 'Pending'],
+        approved_pending_release: ['Reward approved', 'Release pending'],
+        wallet_release: ['Reward released', 'Withdrawable'],
+        referral_pending_release: ['Referral commission', 'Release pending'],
+        referral_credit: ['Referral commission released', 'Withdrawable'],
+        rejected_reversal: ['Reward reversed', 'Rejected'],
+        withdrawal_hold: ['Withdrawal requested', 'Processing'],
+        withdrawal_refund: ['Withdrawal refund', 'Returned to wallet'],
+      };
+      const signed = (p) => (p < 0 ? '−' : '+') + inr(Math.abs(p));
+      const activity = ledger.map(l => {
+        const km = kindMap[l.kind] || [l.kind, ''];
+        return `<div class="entry"><span class="aic">${I.arrowUR}</span><div style="min-width:0;flex:1"><p class="t">${esc(km[0])}</p><p class="s">${esc(l.created_at)}${km[1] ? ' · ' + esc(km[1]) : ''}</p></div><span class="amt">${signed(l.amount_paise)}</span></div>`;
+      }).join('');
+      return layout(user, 'Wallet', `
+        <div class="dash-head"><div><p class="greet-date">Account / Wallet</p><h1 class="greet" style="font-size:30px">Wallet</h1><p class="muted" style="margin:8px 0 0;font-size:12.5px;max-width:450px">Earnings yahan jama hoti hain. Approved reward ki date ke baad withdraw request bhejo.</p></div><span class="bic" style="width:40px;height:40px;border-radius:9px;background:#F4F4F4;display:flex;align-items:center;justify-content:center">${I.wallet}</span></div>
+        <section class="balances" aria-label="Wallet balances">
+          <article class="bal"><div class="top"><span class="lbl">Pending</span><span class="bic">${I.clock}</span></div><p class="amt" style="font-size:22px">${inr(fresh.pending_paise)}</p><p class="hint">Partner approval ka wait ho raha hai</p></article>
+          <article class="bal"><div class="top"><span class="lbl">Approved · release pending</span><span class="bic">${I.check}</span></div><p class="amt" style="font-size:22px">${inr(fresh.approved_paise)}</p><p class="hint">Approve ho gaya — admin expected date par release karega</p></article>
+          <article class="bal dark"><div class="top"><span class="lbl">Withdrawable</span><span class="bic">${I.wallet}</span></div><p class="amt" style="font-size:22px">${inr(fresh.withdrawable_paise)}</p><p class="hint">Abhi withdraw kar sakte ho</p></article>
+        </section>
+        <p class="sr-only">Pending: <b>${inr(fresh.pending_paise)}</b> · Approved (release pending): <b>${inr(fresh.approved_paise)}</b> · Withdrawable balance: <b>${inr(fresh.withdrawable_paise)}</b></p>
+        ${approvedList.length ? `<div class="notebox" style="margin-top:16px">${approvedList.map(a => `<p style="margin:2px 0">• ${esc(a.title)} — ${inr(a.user_reward_paise)} · Expected credit: <b>${esc(fmtDate(a.expected_credit_date))}</b></p>`).join('')}</div>` : ''}
+        <div class="wallet-grid">
+          <section class="wcard"><h2>Withdraw funds</h2><p class="sub">Available balance: ${inr(fresh.withdrawable_paise)} · Minimum withdrawal: ${inr(min)}</p>
+          <form class="form" method="post" action="/wallet/withdraw" style="margin-top:16px"><label>Amount (₹)<input name="amount" type="number" min="1" required value="${esc(vals.amount ?? '')}"${inv(errs, 'amount')}>${ferr(errs, 'amount')}</label>
+          <label>Method<select name="method"><option value="upi"${sel('upi')}>UPI</option><option value="bank"${sel('bank')}>Bank</option><option value="giftcard"${sel('giftcard')}>Gift Card</option></select></label>
+          <label>UPI ID / Bank details / Email<input name="destination" required value="${esc(vals.destination ?? '')}"${inv(errs, 'destination')}>${ferr(errs, 'destination')}</label>
+          <button class="btn block" type="submit">Request Withdrawal</button></form></section>
+          <section class="wcard"><h2>Wallet activity</h2><p class="sub">Credits, releases and withdrawals</p>
+          <div class="activity" style="margin-top:8px">${activity || '<p class="muted" style="margin-top:12px">No history yet.</p>'}</div></section>
+        </div>
+        <h2 style="margin-top:32px">My Withdrawals</h2>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)} · ${esc(w.destination)} · Status: ${esc(w.status)}</article>`).join('') || '<p class="muted">Abhi koi withdrawal nahi.</p>'}`);
     };
     if (p === '/wallet' && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
@@ -512,6 +631,11 @@ const server = http.createServer(async (req, res) => {
 
 async function adminRoutes(req, res, p, url, user) {
   const L = async (t, b) => await layout(user, t, b);
+  // V6 admin shell: crumbs + title + access pill + tab nav (owner's design).
+  const SECTIONS = [['Campaigns', '/admin/campaigns'], ['Releases', '/admin/releases'], ['Claims', '/admin/claims'], ['Earnings', '/admin/earnings'], ['Users', '/admin/users'], ['Conversions & Postbacks', '/admin/conversions'], ['Withdrawals', '/admin/withdrawals'], ['Settings', '/admin/settings'], ['Change Password', '/admin/password']];
+  const A = async (t, active, sub, b) => await L(t, `<p class="crumbs">${esc(await getSetting(db, 'site_name', 'CampaignWala'))} / Admin</p>
+    <div class="admin-head"><div><h1 class="admin-title">${esc(t)}</h1>${sub ? `<p class="admin-sub">${esc(sub)}</p>` : ''}</div><span class="accesspill">Admin access</span></div>
+    <nav class="adminnav2" aria-label="Admin sections">${SECTIONS.map(s => `<a href="${s[1]}"${s[0] === active ? ' class="on"' : ''}>${s[0]}</a>`).join('')}</nav>${b}`);
   if (p === '/admin' && req.method === 'GET') {
     const stats = {
       users: (await db.prepare('SELECT COUNT(*) n FROM users').get()).n,
@@ -522,27 +646,40 @@ async function adminRoutes(req, res, p, url, user) {
       pendingClaims: (await db.prepare("SELECT COUNT(*) n FROM claims WHERE status='pending'").get()).n,
     };
     const lastCleanup = await getSetting(db, 'last_cleanup_at', '');
-    return html(res, 200, await L('Admin', `<h1>Admin Dashboard</h1>
-      <div class="stats statgrid">
-        <div class="stat"><span class="n">${stats.users}</span><span class="l">Users</span></div>
-        <div class="stat"><span class="n">${stats.campaigns}</span><span class="l">Campaigns</span></div>
-        <div class="stat"><span class="n">${stats.conversions}</span><span class="l">Conversions</span></div>
-        <div class="stat"><span class="n">${stats.pendingWd}</span><span class="l">Pending withdrawals</span></div>
-        <div class="stat"><span class="n">${stats.pendingRelease}</span><span class="l">Release pending</span></div>
-        <div class="stat"><span class="n">${stats.pendingClaims}</span><span class="l">Claims pending</span></div>
-      </div>
-      ${lastCleanup ? `<p class="muted">Last data cleanup (retention: raw 30d · financial 60d after closure): ${esc(lastCleanup)}</p>` : ''}
-      <nav class="adminnav"><a class="btn small" href="/admin/campaigns">Campaigns</a><a class="btn small" href="/admin/releases">Releases</a><a class="btn small" href="/admin/claims">Claims</a><a class="btn small" href="/admin/earnings">Earnings</a><a class="btn small" href="/admin/users">Users</a><a class="btn small" href="/admin/conversions">Conversions &amp; Postbacks</a><a class="btn small" href="/admin/withdrawals">Withdrawals</a><a class="btn small" href="/admin/settings">Settings</a><a class="btn small ghost" href="/admin/password">Change Password</a></nav>
-      <form method="post" action="/admin/import"><button class="btn" type="submit">Import campaigns from ALL feeds now</button></form>
-      <form method="post" action="/admin/reconcile"><button class="btn ghost" type="submit">Run reconciliation check</button></form>`));
+    const liveCount = (await db.prepare('SELECT COUNT(*) n FROM campaigns WHERE is_live=1').get()).n;
+    const wdTotal = ((await db.prepare("SELECT COALESCE(SUM(amount_paise),0) v FROM withdrawals WHERE status='pending'").get()) || {}).v || 0;
+    const relTotal = ((await db.prepare("SELECT COALESCE(SUM(user_reward_paise),0) v FROM conversions WHERE status='approved' AND released=0").get()) || {}).v || 0;
+    const recent = await db.prepare('SELECT cv.*, c.title, u.name FROM conversions cv JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id JOIN users u ON u.id=cl.user_id ORDER BY cv.id DESC LIMIT 3').all();
+    const scard = (label, value, note, icon) => `<article class="statcard"><div class="top"><span class="lbl">${label}</span><span class="sic">${icon}</span></div><p class="n">${value}</p><p class="note">${note}</p></article>`;
+    return html(res, 200, await A('Admin Dashboard', '', 'Platform activity aur rewards ko manage karo.', `
+      <div class="strip"><div><p class="t">Platform data up to date</p><p class="s">${lastCleanup ? `Last retention cleanup · ${esc(lastCleanup)} (raw 30d · financial 60d after closure)` : 'Retention cleanup abhi tak nahi hua'}</p></div>
+      <div class="acts"><form method="post" action="/admin/reconcile"><button class="btn small ghost" type="submit">${I.refresh} Reconcile</button></form>
+      <form method="post" action="/admin/import"><button class="btn small" type="submit">${I.download} Import now</button></form></div></div>
+      <section class="statcards">
+        ${scard('Users', stats.users, 'Total members', I.users)}
+        ${scard('Campaigns', stats.campaigns, liveCount + ' live now', I.clip)}
+        ${scard('Conversions', stats.conversions, 'All time', I.badge)}
+        ${scard('Pending withdrawals', stats.pendingWd, inr(wdTotal) + ' total', I.wallet)}
+        ${scard('Release pending', stats.pendingRelease, inr(relTotal) + ' total', I.clock)}
+        ${scard('Claims pending', stats.pendingClaims, 'Needs review', I.shield)}
+      </section>
+      <section class="panels">
+        <div class="panel"><div style="display:flex;align-items:flex-start;justify-content:space-between"><div><h2>Recent activity</h2><p class="sub">Latest platform events</p></div><a href="/admin/conversions" style="font-size:9.5px;font-weight:600;color:#666;text-decoration:none;display:inline-flex;gap:4px;align-items:center">View log ${I.arrowUR}</a></div>
+        ${recent.map(cv => `<div class="prow"><span class="pic">${I.badge}</span><div style="min-width:0;flex:1"><p class="t">Conversion ${esc(cv.status)}</p><p class="s">${esc(cv.title)} · ${esc(cv.name)} · ${esc(fmtDay(cv.updated_at))}</p></div><span class="amt">${inr(cv.user_reward_paise)}</span></div>`).join('') || '<p class="muted" style="margin-top:12px">Abhi koi conversion nahi.</p>'}</div>
+        <div class="panel"><div style="display:flex;align-items:center;gap:8px"><span class="pic" style="border-radius:8px">${I.sliders}</span><h2>Quick settings</h2></div>
+        <div class="qset" style="margin-top:8px"><span class="k">User share</span><span class="v">${esc(await getSetting(db, 'user_share_percent', '87.5'))}%</span></div>
+        <div class="qset"><span class="k">Referral share</span><span class="v">${esc(await getSetting(db, 'referral_percent', '10'))}%</span></div>
+        <div class="qset"><span class="k">Default credit days</span><span class="v">${esc(await getSetting(db, 'credit_days', '7'))} days</span></div>
+        <a href="/admin/settings" style="display:inline-flex;gap:4px;align-items:center;font-size:10.5px;font-weight:600;color:#555;text-decoration:none;margin-top:10px">Manage settings ${I.chevR}</a></div>
+      </section>`));
   }
   if (p === '/admin/import' && req.method === 'POST') {
     const r = await importAllFeeds(db);
-    return html(res, 200, await L('Import', `<p>Import result: ${esc(JSON.stringify(r))}</p><p><a href="/admin/campaigns">Campaigns dekho</a></p>`));
+    return html(res, 200, await A('Import', 'Campaigns', '', `<div class="card"><p>Import result: ${esc(JSON.stringify(r))}</p><p><a href="/admin/campaigns">Campaigns dekho</a></p></div>`));
   }
   if (p === '/admin/reconcile' && req.method === 'POST') {
     const r = await reconcilePending(db);
-    return html(res, 200, await L('Reconcile', `<p>${esc(JSON.stringify(r))}</p>`));
+    return html(res, 200, await A('Reconcile', '', '', `<div class="card"><p>${esc(JSON.stringify(r))}</p><p><a href="/admin">← Admin Dashboard</a></p></div>`));
   }
   if (p === '/admin/campaigns' && req.method === 'GET') {
     const all = await db.prepare('SELECT * FROM campaigns ORDER BY id DESC').all();
@@ -559,7 +696,7 @@ async function adminRoutes(req, res, p, url, user) {
       <p><a class="btn small" href="/admin/campaigns/${c.id}/edit">Edit</a></p>
       <form method="post" action="/admin/campaigns/${c.id}/toggle"><button class="btn small ghost" type="submit">${c.is_live ? 'Turn OFF' : 'Turn LIVE'}</button></form></article>`;
     }).join('');
-    return html(res, 200, await L('Campaigns', `<h1>Campaigns</h1><p><a class="btn" href="/admin/campaigns/new">+ New Campaign</a></p>${cards}`));
+    return html(res, 200, await A('Campaigns', 'Campaigns', 'Live offers, payouts aur campaign rules manage karo.', `<p style="margin:20px 0 14px"><a class="btn" href="/admin/campaigns/new">+ New Campaign</a></p>${cards || '<p class="muted">Abhi koi campaign nahi hai.</p>'}`));
   }
   const campForm = (c = {}) => `<form class="card form" method="post" action="${c.id ? `/admin/campaigns/${c.id}/edit` : '/admin/campaigns/new'}">
     <label>Title<input name="title" required value="${esc(c.title || '')}"></label>
@@ -605,7 +742,7 @@ async function adminRoutes(req, res, p, url, user) {
       steps: JSON.stringify(parseSteps(b.steps)), rules: b.rules_text || '', live: b.is_live === '1' ? 1 : 0,
     };
   };
-  if (p === '/admin/campaigns/new' && req.method === 'GET') return html(res, 200, await L('New Campaign', `<h1>New Campaign</h1>${campForm()}`));
+  if (p === '/admin/campaigns/new' && req.method === 'GET') return html(res, 200, await A('New Campaign', 'Campaigns', '', campForm()));
   if (p === '/admin/campaigns/new' && req.method === 'POST') {
     const b = await readBody(req);
     const f = await campFields(b);
@@ -617,7 +754,7 @@ async function adminRoutes(req, res, p, url, user) {
   const editMatch = p.match(/^\/admin\/campaigns\/(\d+)\/edit$/);
   if (editMatch && req.method === 'GET') {
     const c = await db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
-    return c ? html(res, 200, await L('Edit Campaign', `<h1>Edit Campaign</h1>${campForm(c)}`)) : html(res, 404, await L('404', '<h1>Not found</h1>'));
+    return c ? html(res, 200, await A('Edit Campaign', 'Campaigns', '', campForm(c))) : html(res, 404, await L('404', '<h1>Not found</h1>'));
   }
   if (editMatch && req.method === 'POST') {
     const b = await readBody(req);
@@ -635,19 +772,22 @@ async function adminRoutes(req, res, p, url, user) {
   }
   if (p === '/admin/users' && req.method === 'GET') {
     const users = await db.prepare('SELECT * FROM users ORDER BY id DESC').all();
-    return html(res, 200, await L('Users', `<h1>Users</h1>${users.map(u => `<article class="card"><h3>${esc(u.name)}</h3><p class="muted">${esc(u.email)} · ${esc(u.phone || '')}</p><p>Pending ${inr(u.pending_paise)} · Approved (release pending) ${inr(u.approved_paise)} · Withdrawable ${inr(u.withdrawable_paise)} · Ref code ${esc(u.referral_code)}${u.is_admin ? ' · ADMIN' : ''}</p></article>`).join('')}`));
+    const rows = users.map(u => `<tr><td>${esc(u.name)}${u.is_admin ? ' <span class="pill black">ADMIN</span>' : ''}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(u.email)} · ${esc(u.phone || '')}</span></td><td>${inr(u.pending_paise)}</td><td>${inr(u.approved_paise)}</td><td>${inr(u.withdrawable_paise)}</td><td>${esc(u.referral_code)}</td></tr>`).join('');
+    return html(res, 200, await A('Users', 'Users', 'Member profiles, balances aur referral activity.', `<div class="tblwrap"><div class="tw-head"><div><h2>Users overview</h2><p>Showing ${users.length} members</p></div></div><div class="tblscroll"><table class="tbl"><thead><tr><th>Member</th><th>Pending</th><th>Approved</th><th>Withdrawable</th><th>Referral</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No users yet.</td></tr>'}</tbody></table></div></div>`));
   }
   if (p === '/admin/conversions' && req.method === 'GET') {
     const convs = await db.prepare('SELECT cv.*, c.title FROM conversions cv JOIN clicks cl ON cl.click_id=cv.click_id JOIN campaigns c ON c.id=cl.campaign_id ORDER BY cv.id DESC LIMIT 50').all();
     const logs = await db.prepare('SELECT * FROM postback_log ORDER BY id DESC LIMIT 50').all();
-    return html(res, 200, await L('Conversions', `<h1>Conversions</h1>${convs.map(cv => `<article class="card"><b>${esc(cv.title)}</b><p class="muted">${esc(cv.click_id)} · ${esc(cv.status)}${cv.status === 'approved' ? (cv.released ? ' · RELEASED' : ` · release pending (expected ${esc(fmtDate(cv.expected_credit_date))})`) : ''} · User reward ${inr(cv.user_reward_paise)}</p></article>`).join('') || '<p>None yet.</p>'}
-      <h1>Postback Log</h1>${logs.map(l => `<article class="card"><p class="muted">#${l.id} · ${esc(l.received_at)} · ${esc(l.click_id)} · event=${esc(l.event)} status=${esc(l.status)} · ${l.accepted ? 'ACCEPTED' : 'REJECTED'} (${esc(l.reason)})</p></article>`).join('') || '<p>No postbacks yet.</p>'}`));
+    const crows = convs.map(cv => `<tr><td>${esc(cv.title)}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(cv.click_id)}</span></td><td>${esc(cv.status)}${cv.status === 'approved' ? (cv.released ? ' · RELEASED' : ` · release pending (expected ${esc(fmtDate(cv.expected_credit_date))})`) : ''}</td><td>${inr(cv.user_reward_paise)}</td><td>${esc(cv.updated_at || '')}</td></tr>`).join('');
+    const lrows = logs.map(l => `<tr><td>#${l.id}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(l.received_at)}</span></td><td>${esc(l.click_id)}</td><td>event=${esc(l.event)} status=${esc(l.status)}</td><td>${l.accepted ? 'ACCEPTED' : 'REJECTED'} (${esc(l.reason)})</td></tr>`).join('');
+    return html(res, 200, await A('Conversions & Postbacks', 'Conversions & Postbacks', 'Partner signals aur conversion status ka audit log.', `
+      <div class="tblwrap"><div class="tw-head"><div><h2>Conversions overview</h2><p>Showing recent records</p></div></div><div class="tblscroll"><table class="tbl"><thead><tr><th>Campaign / ID</th><th>Status</th><th>User reward</th><th>Updated</th></tr></thead><tbody>${crows || '<tr><td colspan="4">None yet.</td></tr>'}</tbody></table></div></div>
+      <div class="tblwrap"><div class="tw-head"><div><h2>Postback Log</h2><p>Network se aaya har signal</p></div></div><div class="tblscroll"><table class="tbl"><thead><tr><th>Received</th><th>Click</th><th>Event / Status</th><th>Result</th></tr></thead><tbody>${lrows || '<tr><td colspan="4">No postbacks yet.</td></tr>'}</tbody></table></div></div>`));
   }
   if (p === '/admin/withdrawals' && req.method === 'GET') {
     const wds = await db.prepare('SELECT w.*, u.name, u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC').all();
-    return html(res, 200, await L('Withdrawals', `<h1>Withdrawals</h1>${wds.map(w => `<article class="card"><b>${inr(w.amount_paise)}</b> · ${esc(w.method)}<p class="muted">${esc(w.name)} (${esc(w.email)}) · ${esc(w.destination)} · Status: ${esc(w.status)}</p>
-      ${w.status === 'pending' ? `<form method="post" action="/admin/withdrawals/${w.id}/approve" class="inline"><button class="btn small" type="submit">Approve &amp; Paid</button></form>
-      <form method="post" action="/admin/withdrawals/${w.id}/reject" class="inline"><button class="btn small ghost" type="submit">Reject (refund)</button></form>` : ''}</article>`).join('') || '<p>None.</p>'}`));
+    const rows = wds.map(w => `<tr><td>${esc(w.name)}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(w.email)}</span></td><td>${inr(w.amount_paise)}</td><td>${esc(w.method)}</td><td>${esc(w.destination)}</td><td>Status: ${esc(w.status)}</td><td class="acts">${w.status === 'pending' ? `<form method="post" action="/admin/withdrawals/${w.id}/approve" class="inline"><button class="btn small" type="submit">Approve &amp; Paid</button></form> <form method="post" action="/admin/withdrawals/${w.id}/reject" class="inline"><button class="btn small ghost" type="submit">Reject (refund)</button></form>` : ''}</td></tr>`).join('');
+    return html(res, 200, await A('Withdrawals', 'Withdrawals', 'User requests review karke paid mark ya reject karo.', `<div class="tblwrap"><div class="tw-head"><div><h2>Withdrawals overview</h2><p>Showing ${wds.length} requests</p></div></div><div class="tblscroll"><table class="tbl"><thead><tr><th>User</th><th>Amount</th><th>Method</th><th>Destination</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows || '<tr><td colspan="6">None.</td></tr>'}</tbody></table></div></div>`));
   }
   const wdMatch = p.match(/^\/admin\/withdrawals\/(\d+)\/(approve|reject)$/);
   if (wdMatch && req.method === 'POST') {
@@ -675,32 +815,33 @@ async function adminRoutes(req, res, p, url, user) {
       <p class="muted">${esc(cv.name)} (${esc(cv.email)}) · Approved: ${esc((cv.approved_at || '').slice(0, 10))} · Expected credit: <b>${esc(fmtDate(cv.expected_credit_date))}</b>${cv.referral_amount_paise ? ` · Referral held: ${inr(cv.referral_amount_paise)}` : ''}</p>
       <form method="post" action="/admin/releases/${esc(cv.click_id)}"><button class="btn small" type="submit">Release to Wallet</button></form></article>`;
     }).join('');
-    return html(res, 200, await L('Releases', `<h1>Releases (Approved — release pending)</h1>
-      <form method="post" action="/admin/releases/bulk-due"><button class="btn" type="submit">Release ALL due (date aa gayi hai)</button></form>
-      <p class="muted">Release karte hi paisa user ke Withdrawable wallet me jayega aur referral commission bhi referrer ko mil jayega.</p>${cards || '<p>Abhi kuch release pending nahi.</p>'}`));
+    return html(res, 200, await A('Releases', 'Releases', 'Approved rewards jo credit date ke liye ready hain.', `
+      <div class="strip"><div><p class="t">Release karte hi paisa Withdrawable ho jayega</p><p class="s">Referral commission bhi referrer ko saath me mil jayega.</p></div>
+      <form method="post" action="/admin/releases/bulk-due"><button class="btn small" type="submit">Release ALL due (date aa gayi hai)</button></form></div>
+      <div style="margin-top:20px">${cards || '<p class="muted">Abhi kuch release pending nahi.</p>'}</div>`));
   }
   if (p === '/admin/releases/bulk-due' && req.method === 'POST') {
     const today = new Date().toISOString().slice(0, 10);
     const rows = await db.prepare("SELECT click_id FROM conversions WHERE status='approved' AND released=0 AND expected_credit_date<=?").all(today);
     let n = 0;
     for (const r of rows) if ((await releaseConversion(r.click_id)).ok) n++;
-    return html(res, 200, await L('Releases', `<p>${n} conversion(s) release ho gaye.</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
+    return html(res, 200, await A('Releases', 'Releases', '', `<div class="card"><p>${n} conversion(s) release ho gaye.</p><p><a href="/admin/releases">Wapas Releases</a></p></div>`));
   }
   const relMatch = p.match(/^\/admin\/releases\/([\w-]+)$/);
   if (relMatch && req.method === 'POST') {
     const r = await releaseConversion(relMatch[1]);
-    return html(res, 200, await L('Releases', `<p>Release result: ${esc(r.reason)}</p><p><a href="/admin/releases">Wapas Releases</a></p>`));
+    return html(res, 200, await A('Releases', 'Releases', '', `<div class="card"><p>Release result: ${esc(r.reason)}</p><p><a href="/admin/releases">Wapas Releases</a></p></div>`));
   }
   // ---- Claims (custom / manual-verification campaigns) ----
   if (p === '/admin/claims' && req.method === 'GET') {
     const claims = await db.prepare(`SELECT cq.*, c.title, u.name, u.email FROM claims cq
       JOIN campaigns c ON c.id=cq.campaign_id JOIN users u ON u.id=cq.user_id ORDER BY cq.id DESC LIMIT 100`).all();
-    return html(res, 200, await L('Claims', `<h1>Claims (Custom Campaigns)</h1>${claims.map(cq => `<article class="card"><b>${esc(cq.title)}</b> · Status: ${esc(cq.status)}${cq.status === 'approved' ? ` · Reward: ${inr(cq.rolled_reward_paise)}` : ''}
+    return html(res, 200, await A('Claims', 'Claims', 'Manual campaigns ke user-submitted claims review karo.', `<div style="margin-top:20px">${claims.map(cq => `<article class="card"><b>${esc(cq.title)}</b> · Status: ${esc(cq.status)}${cq.status === 'approved' ? ` · Reward: ${inr(cq.rolled_reward_paise)}` : ''}
       <p class="muted">${esc(cq.name)} (${esc(cq.email)}) · ${esc(cq.created_at)}</p>
       <p>Note: ${esc(cq.note)}</p>${cq.proof_url ? `<p>Proof: <a href="${esc(cq.proof_url)}" target="_blank" rel="noopener">${esc(cq.proof_url)}</a></p>` : ''}
       ${cq.status === 'rejected' ? `<p class="muted">Reject reason: ${esc(cq.reject_reason)}</p>` : ''}
       ${cq.status === 'pending' ? `<form method="post" action="/admin/claims/${cq.id}/approve" class="inline"><button class="btn small" type="submit">Approve</button></form>
-      <form method="post" action="/admin/claims/${cq.id}/reject" class="form inline-form"><input name="reason" placeholder="Reject reason (user ko dikhega)" required><button class="btn small ghost" type="submit">Reject</button></form>` : ''}</article>`).join('') || '<p>No claims yet.</p>'}`));
+      <form method="post" action="/admin/claims/${cq.id}/reject" class="form inline-form"><input name="reason" placeholder="Reject reason (user ko dikhega)" required><button class="btn small ghost" type="submit">Reject</button></form>` : ''}</article>`).join('') || '<p>No claims yet.</p>'}</div>`));
   }
   const claimMatch = p.match(/^\/admin\/claims\/(\d+)\/(approve|reject)$/);
   if (claimMatch && req.method === 'POST') {
@@ -738,7 +879,7 @@ async function adminRoutes(req, res, p, url, user) {
   // Note: ADMIN_PASSWORD env re-syncs on boot (see ensureAdmin), so after a
   // panel change the env should be updated too, warna restart par env wala
   // password wapas lag jayega.
-  const passwordForm = (errs = {}, done = false) => `<h1>Change Password</h1>
+  const passwordForm = (errs = {}, done = false) => `
     ${done ? '<p class="notice">✅ Password change ho gaya. Isi password se ab login hoga.<br><span class="muted">Note: server restart par ADMIN_PASSWORD env wala password dobara sync ho jata hai — env bhi update kar dena.</span></p>' : ''}
     <form class="card form" method="post" action="/admin/password">
     <label>Current password<input name="current" type="password" required autocomplete="current-password"${inv(errs, 'current')}>${ferr(errs, 'current')}</label>
@@ -747,7 +888,7 @@ async function adminRoutes(req, res, p, url, user) {
     <button class="btn" type="submit">Password Change Karo</button></form>
     <p><a href="/admin">← Admin Dashboard</a></p>`;
   if (p === '/admin/password' && req.method === 'GET') {
-    return html(res, 200, await L('Change Password', passwordForm()));
+    return html(res, 200, await A('Change Password', 'Change Password', 'Admin account ke liye ek naya, strong password set karo.', passwordForm()));
   }
   if (p === '/admin/password' && req.method === 'POST') {
     const b = await readBody(req);
@@ -756,9 +897,9 @@ async function adminRoutes(req, res, p, url, user) {
     if (!verifyPassword(b.current || '', me.pass_hash)) errs.current = 'Current password galat hai.';
     if (!b.next || String(b.next).length < 8) errs.next = 'New password kam se kam 8 characters ka rakho.';
     else if (b.next !== b.confirm) errs.confirm = 'Dono new password match nahi ho rahe.';
-    if (Object.keys(errs).length) return html(res, 200, await L('Change Password', passwordForm(errs)));
+    if (Object.keys(errs).length) return html(res, 200, await A('Change Password', 'Change Password', 'Admin account ke liye ek naya, strong password set karo.', passwordForm(errs)));
     await db.prepare('UPDATE users SET pass_hash=? WHERE id=?').run(hashPassword(b.next), user.id);
-    return html(res, 200, await L('Change Password', passwordForm({}, true)));
+    return html(res, 200, await A('Change Password', 'Change Password', 'Admin account ke liye ek naya, strong password set karo.', passwordForm({}, true)));
   }
   // ---- Earnings (ADMIN ONLY — upstream payout & margin kabhi public nahi) ----
   if (p === '/admin/earnings' && req.method === 'GET') {
@@ -775,7 +916,7 @@ async function adminRoutes(req, res, p, url, user) {
     e.referralTotal = e.referralPaid + e.referralPending;
     e.marginApproved = e.upstreamApproved - e.rewardsApproved - e.referralTotal;
     e.marginReleased = await sum("SELECT COALESCE(SUM(upstream_payout_paise),0) v FROM conversions WHERE status='approved' AND released=1") - e.rewardsReleased - e.referralPaid;
-    return html(res, 200, await L('Earnings', `<h1>Earnings (sirf admin)</h1><section class="card">
+    return html(res, 200, await A('Earnings', 'Earnings', 'Company payout, user reward aur campaign margin ka breakdown. (sirf admin)', `<section class="card" style="margin-top:20px">
       <p>Approved conversions: <b>${e.approvedCount}</b></p>
       <p>Total upstream payout (approved): <b>${inr(e.upstreamApproved)}</b></p>
       <p>User rewards — released: <b>${inr(e.rewardsReleased)}</b> · release pending: <b>${inr(e.rewardsPending)}</b></p>
@@ -790,7 +931,7 @@ async function adminRoutes(req, res, p, url, user) {
       <p class="muted">URL saved (server only, hidden) · Token: ${f.token ? 'set (hidden)' : 'not set'}</p>
       <form method="post" action="/admin/feeds/${i}/toggle" class="inline"><button class="btn small ghost" type="submit">${f.enabled === false ? 'Enable' : 'Disable'}</button></form>
       <form method="post" action="/admin/feeds/${i}/delete" class="inline"><button class="btn small ghost" type="submit">Delete feed</button></form></article>`).join('');
-    return html(res, 200, await L('Settings', `<h1>Settings</h1><form class="card form" method="post" action="/admin/settings">
+    return html(res, 200, await A('Settings', 'Settings', 'Site, referral, payout share aur feeds configuration.', `<form class="card form" method="post" action="/admin/settings" style="margin-top:20px">
       <label>Site name<input name="site_name" value="${esc(await getSetting(db, 'site_name', 'CampaignWala'))}"></label>
       <label>Referral commission %<input name="referral_percent" type="number" step="0.1" value="${esc(await getSetting(db, 'referral_percent', '10'))}"></label>
       <label>Minimum withdrawal (₹)<input name="min_withdrawal" type="number" step="0.01" value="${Number(await getSetting(db, 'min_withdrawal_paise', '5000')) / 100}"></label>
