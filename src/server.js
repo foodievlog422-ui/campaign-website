@@ -172,7 +172,7 @@ async function layout(user, title, body) {
 <title>${esc(title)} · ${site}</title><meta name="mitgo-verification" content="e97a990a-6417-4648-983f-b821ae013a95"><meta name="mylead-verification" content="ba856886239dedcc56ca0541621fdb50"><link rel="stylesheet" href="/style.css"></head><body>
 <header><div class="wrap head"><a class="logo" href="/"><span class="mark">₹</span>${site}</a><nav>${nav}</nav></div></header>
 <main class="wrap">${body}</main>
-<footer><div class="wrap foot"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a></div></footer>
+<footer><div class="wrap foot"><a href="/privacy">Privacy Policy</a><a href="/terms">Terms</a><a href="/refund-policy">Refund &amp; Rejection Policy</a><a href="https://t.me/+66DYjnIvwVYwMjBl" target="_blank" rel="noopener">Join our Telegram Channel</a></div></footer>
 </body></html>`;
 }
 
