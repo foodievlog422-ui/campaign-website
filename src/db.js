@@ -366,6 +366,32 @@ export async function openDb(dbPath) {
     // Additive migrations for PG databases created before these columns
     // existed (CREATE TABLE IF NOT EXISTS does not add columns).
     await db.exec(`ALTER TABLE ${PG_SCHEMA}.campaigns ADD COLUMN IF NOT EXISTS hide_from_list INTEGER NOT NULL DEFAULT 0`);
+    // Affiliate tables as standalone statements: the pooled PG connection
+    // does not reliably apply brand-new tables appended to the big DDL
+    // string, so create them explicitly (idempotent).
+    await db.exec(`CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.affiliates (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL UNIQUE REFERENCES ${PG_SCHEMA}.users(id),
+      first_name TEXT NOT NULL DEFAULT '', surname TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', dob TEXT NOT NULL DEFAULT '',
+      slug TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (${NOW_PG})
+    )`);
+    await db.exec(`CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.affiliate_leads (
+      id BIGSERIAL PRIMARY KEY,
+      affiliate_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.affiliates(id),
+      campaign_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.campaigns(id),
+      visitor_name TEXT NOT NULL DEFAULT '', visitor_phone TEXT NOT NULL DEFAULT '',
+      pay_method TEXT NOT NULL DEFAULT 'upi', upi_id TEXT DEFAULT '', upi_name TEXT DEFAULT '',
+      bank_details TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'started',
+      visitor_reward_paise BIGINT NOT NULL DEFAULT 0,
+      affiliate_amount_paise BIGINT NOT NULL DEFAULT 0,
+      affiliate_released INTEGER NOT NULL DEFAULT 0,
+      visitor_paid INTEGER NOT NULL DEFAULT 0,
+      ip TEXT DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (${NOW_PG}), completed_at TEXT DEFAULT ''
+    )`);
   } else {
     db = sqliteFacade(dbPath);
     await db.exec(SQLITE_DDL);
