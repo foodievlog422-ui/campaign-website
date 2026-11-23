@@ -197,13 +197,13 @@ async function startSession(res, userId, remember) {
 async function layout(user, title, body, opts = {}) {
   const site = esc(await getSetting(db, 'site_name', 'CampaignWala'));
   const firstName = user ? esc(String(user.name || '').trim().split(/\s+/)[0]) : '';
-  const memberLinks = user ? `<a href="/my">My Dashboard</a><a href="/wallet">${I.wallet}Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}` : '';
-  const nav = `<a href="/#campaigns">Campaigns</a><a href="/#how-it-works">How it works</a>${memberLinks}`;
+  const memberLinks = user ? `<a href="/refer">Referral</a><a href="/my#mycampaigns">Tracking status</a><a href="/wallet">${I.wallet}Wallet</a>${user.is_admin ? '<a href="/admin">Admin</a>' : ''}` : '';
+  const nav = `<a href="/#campaigns">Campaigns</a>${user ? memberLinks : '<a href="/#how-it-works">How it works</a>'}`;
   const actions = user
     ? `<span class="hi">Hi, ${firstName}</span><form method="post" action="/logout" class="inline"><button class="btn-logout" type="submit">Log out</button></form>`
     : `<a class="login-link" href="/login">Login</a><a class="btn small" href="/signup">Sign up <span aria-hidden="true">↗</span></a>`;
   const mnav = `<details class="mmenu"><summary aria-label="Open navigation">${I.menu}</summary><nav>
-    <a href="/#campaigns">Campaigns</a><a href="/#how-it-works">How it works</a>${user ? '<a href="/my">My Dashboard</a><a href="/wallet">Wallet</a>' + (user.is_admin ? '<a href="/admin">Admin</a>' : '') : '<a href="/login">Login</a><a href="/signup">Sign up</a>'}
+    <a href="/#campaigns">Campaigns</a><a href="/refer">Referral</a><a href="/my#mycampaigns">Tracking status</a><a href="/wallet">Wallet</a><span class="msep"></span><a href="/#how-it-works">How it works</a>${user ? '<a href="/my">My Dashboard</a>' + (user.is_admin ? '<a href="/admin">Admin</a>' : '') + '<form method="post" action="/logout"><button class="mlink" type="submit">Log out</button></form>' : '<a href="/login">Login</a><a href="/signup">Sign up</a>'}
   </nav></details>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · ${site}</title><meta name="mitgo-verification" content="e97a990a-6417-4648-983f-b821ae013a95"><meta name="mylead-verification" content="ba856886239dedcc56ca0541621fdb50"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css"></head><body>
@@ -452,10 +452,120 @@ const server = http.createServer(async (req, res) => {
         <section class="refpanel"><div class="row"><div class="who"><span class="gic">${I.gift}</span><div><h2>Refer &amp; earn</h2><p class="sub">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${refPct}% commission milega.</p></div></div>
         <div class="earn"><p class="earn-lbl">Referral earnings</p><p class="earn-amt">${inr(refEarned)}</p></div></div>
         <div class="refbox"><span class="lnk" id="refLink">${esc(refLink)}</span><button class="copybtn" type="button" id="copyRef">Copy link</button></div>
-        <p class="muted small" style="margin:10px 0 0">Code: ${esc(user.referral_code)}</p></section>
-        <div class="mycamp-head"><div><p class="kick">Your activity</p><h2>My Campaigns ${mine.length ? `<span class="cnt">(${mine.length})</span>` : ''}</h2></div><a href="/#campaigns">Browse all ${I.chevR}</a></div>
+        <p class="muted small" style="margin:10px 0 0">Code: ${esc(user.referral_code)} · <a href="/refer"><b>Affiliate program</b> — apna personal campaign link banao aur share karke kamao ${I.arrowUR}</a></p></section>
+        <div class="mycamp-head" id="mycampaigns"><div><p class="kick">Your activity</p><h2>My Campaigns ${mine.length ? `<span class="cnt">(${mine.length})</span>` : ''}</h2></div><a href="/#campaigns">Browse all ${I.chevR}</a></div>
         ${list ? `<div class="mycamp-list">${list}</div>` : '<div class="empty"><div class="ring">₹</div><h3>Abhi koi campaign start nahi kiya</h3><p class="muted">Home page se koi live campaign chuno aur Start dabao — progress yahi dikhega.</p><p style="margin-top:12px"><a class="btn small" href="/#campaigns">Campaigns dekho</a></p></div>'}
         <script>document.getElementById('copyRef').addEventListener('click',function(){var t=document.getElementById('refLink').textContent;var b=this;function ok(){b.textContent='Copied ✓';setTimeout(function(){b.textContent='Copy link'},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok).catch(ok)}else{ok()}});</script>`));
+    }
+    // ---------- Referral + Affiliate ----------
+    if (p === '/refer' && req.method === 'GET') {
+      if (!user) return redirect(res, '/login');
+      const aff = await db.prepare('SELECT * FROM affiliates WHERE user_id=?').get(user.id);
+      const proto = req.headers['x-forwarded-proto'] || 'http';
+      const host = req.headers.host;
+      const refPct = esc(await getSetting(db, 'referral_percent', '10'));
+      const affPct = esc(await getSetting(db, 'affiliate_percent', '10'));
+      const err = url.searchParams.get('err');
+      const errBox = err ? `<p class="ferr" style="margin-bottom:14px">${esc(err)}</p>` : '';
+      let affBlock;
+      if (!aff) {
+        const nameParts = String(user.name || '').trim().split(/\s+/);
+        affBlock = `<section class="card form" style="margin-top:20px"><h2 style="font-size:16px;margin-bottom:4px">Affiliate bano — apna link banao</h2>
+        <p class="muted small" style="margin:0 0 14px">Apni details bharo, turant tumhara personal affiliate link ban jayega. Link me tumhare phone ke <b>last 6 digits</b> rahenge. Jo bhi us link se offer complete karega, tumhe <b>${affPct}% affiliate earning</b> milegi.</p>
+        ${errBox}
+        <form method="post" action="/refer">
+          <label>First name<input name="first_name" required value="${esc(nameParts[0] || '')}"></label>
+          <label>Surname<input name="surname" required value="${esc(nameParts.slice(1).join(' ') || '')}"></label>
+          <label>Phone number (10 digit)<input name="phone" required inputmode="numeric" maxlength="10" value="${esc(user.phone || '')}"></label>
+          <label>Email<input name="email" type="email" required value="${esc(user.email || '')}"></label>
+          <label>Date of birth<input name="dob" type="date" required></label>
+          <button class="btn block" type="submit">Mera affiliate link banao</button>
+        </form></section>`;
+      } else {
+        const camps = await db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all();
+        const linkRows = camps.map(c => { const l = `${proto}://${host}/aff/${aff.slug}/${c.id}`; return `<div class="refbox" style="margin-top:10px"><span class="lnk">${esc(l)}</span><button class="copybtn" type="button" data-copy="${esc(l)}">Copy</button></div><p class="muted small" style="margin:4px 0 0">${esc(c.title)} — reward ${esc(rewardLabel(c))}, tumhe ${affPct}%</p>`; }).join('');
+        const leads = await db.prepare('SELECT l.*, c.title FROM affiliate_leads l JOIN campaigns c ON c.id=l.campaign_id WHERE l.affiliate_id=? ORDER BY l.id DESC LIMIT 20').all(aff.id);
+        const leadRows = leads.map(l => `<div class="act-row"><span class="aic">${I.users}</span><div style="flex:1;min-width:0"><p class="at">${esc(l.title)}</p><p class="as">${esc(fmtDay(l.created_at))} · Visitor ${esc(l.visitor_phone)} · ${l.status === 'completed' ? 'Completed' : l.status === 'rejected' ? 'Rejected' : 'Started'}</p></div><span class="aamt">${l.status === 'completed' ? inr(l.affiliate_amount_paise) : '—'}</span></div>`).join('');
+        const earned = ((await db.prepare("SELECT COALESCE(SUM(amount_paise),0) v FROM wallet_ledger WHERE user_id=? AND kind IN ('affiliate_pending','affiliate_credit')").get(user.id)) || {}).v || 0;
+        affBlock = `<section class="card" style="margin-top:20px"><h2 style="font-size:16px">Tumhare affiliate links</h2>
+        <p class="muted small" style="margin:6px 0 0">Affiliate: <b>${esc(aff.first_name)} ${esc(aff.surname)}</b> · Phone •••${esc(String(aff.phone).slice(-4))} · Link code: <b>${esc(aff.slug)}</b></p>
+        <p class="muted small" style="margin:6px 0 0">Total affiliate earning: <b>${inr(earned)}</b> — completed lead ka paisa pehle Pending me aayega, admin release ke baad Withdrawable.</p>
+        ${linkRows || '<p class="muted" style="margin-top:10px">Abhi koi live campaign nahi.</p>'}</section>
+        <section class="card" style="margin-top:16px"><h2 style="font-size:16px">Mere affiliate leads</h2>
+        ${leadRows || '<p class="muted" style="margin-top:8px">Abhi koi lead nahi — apna link share karo.</p>'}</section>
+        <script>document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){var t=b.getAttribute('data-copy');function ok(){b.textContent='Copied ✓';setTimeout(function(){b.textContent='Copy'},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok).catch(ok)}else{ok()}})});</script>`;
+      }
+      const refLink = `${proto}://${host}/r/${user.referral_code}`;
+      return html(res, 200, await layout(user, 'Referral', `
+        <p class="crumbs">Account / Referral</p><h1 class="ptitle">Referral</h1>
+        <p class="psub">Do tareeke se kamao: doston ko site par bulao (referral), ya apna affiliate link kahin bhi share karo.</p>
+        <section class="refpanel"><div class="row"><div class="who"><span class="gic">${I.gift}</span><div><h2>Refer &amp; earn</h2><p class="sub">Tumhare link se join karke jab dost ka campaign approve hoga, tumhe ${refPct}% commission milega.</p></div></div></div>
+        <div class="refbox"><span class="lnk" id="refLink">${esc(refLink)}</span><button class="copybtn" type="button" id="copyRef">Copy link</button></div>
+        <p class="muted small" style="margin:10px 0 0">Code: ${esc(user.referral_code)}</p></section>
+        ${affBlock}
+        <script>var cr=document.getElementById('copyRef');if(cr){cr.addEventListener('click',function(){var t=document.getElementById('refLink').textContent;function ok(){cr.textContent='Copied ✓';setTimeout(function(){cr.textContent='Copy link'},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok).catch(ok)}else{ok()}})}</script>`));
+    }
+    if (p === '/refer' && req.method === 'POST') {
+      if (!user) return redirect(res, '/login');
+      const b = await readBody(req);
+      const first = String(b.first_name || '').trim(), sur = String(b.surname || '').trim();
+      const phone = String(b.phone || '').replace(/\D/g, '').slice(-10);
+      const email = String(b.email || '').trim(), dob = String(b.dob || '').trim();
+      if (!first || !sur) return redirect(res, '/refer?err=' + encodeURIComponent('Naam aur surname dono bharo'));
+      if (!/^\d{10}$/.test(phone)) return redirect(res, '/refer?err=' + encodeURIComponent('Sahi 10 digit phone number dalo'));
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return redirect(res, '/refer?err=' + encodeURIComponent('Sahi email dalo'));
+      if (!dob) return redirect(res, '/refer?err=' + encodeURIComponent('Date of birth chuno'));
+      const existing = await db.prepare('SELECT * FROM affiliates WHERE user_id=?').get(user.id);
+      if (existing) {
+        await db.prepare('UPDATE affiliates SET first_name=?,surname=?,phone=?,email=?,dob=? WHERE user_id=?').run(first, sur, phone, email, dob, user.id);
+      } else {
+        let slug = phone.slice(-6), n = 1;
+        while (await db.prepare('SELECT id FROM affiliates WHERE slug=?').get(slug)) { n += 1; slug = phone.slice(-6) + '-' + n; }
+        await db.prepare('INSERT INTO affiliates(user_id,first_name,surname,phone,email,dob,slug) VALUES(?,?,?,?,?,?,?)').run(user.id, first, sur, phone, email, dob, slug);
+      }
+      return redirect(res, '/refer');
+    }
+    const affMatch = p.match(/^\/aff\/([A-Za-z0-9-]+)\/(\d+)$/);
+    if (affMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const aff = await db.prepare('SELECT * FROM affiliates WHERE slug=?').get(affMatch[1]);
+      const camp = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(affMatch[2]);
+      const siteName = esc(await getSetting(db, 'site_name', 'CampaignWala'));
+      const standalone = (title, inner) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)} · ${siteName}</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#fafafa;color:#171717}.box{max-width:480px;margin:0 auto;padding:28px 20px 48px}.mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;background:#171717;color:#fff;font-weight:700;font-size:17px}h1{font-size:23px;letter-spacing:-.02em;margin:18px 0 6px}.muted{color:#666;font-size:13.5px;line-height:1.65}.card{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:20px;margin-top:18px}label{display:block;font-size:12.5px;font-weight:600;margin:14px 0 6px}input,textarea,select{width:100%;padding:11px 12px;border:1px solid #d4d4d4;border-radius:8px;font-size:14px;font-family:inherit;background:#fff}input:focus,textarea:focus{outline:2px solid #171717;outline-offset:0;border-color:#171717}.btn{display:block;width:100%;margin-top:20px;padding:14px;background:#171717;color:#fff;border:0;border-radius:9px;font-size:14.5px;font-weight:600;cursor:pointer}.reward{font-size:30px;font-weight:700;letter-spacing:-.02em}.radio{display:flex;gap:8px}.radio label{flex:1;margin:0;padding:11px;border:1px solid #d4d4d4;border-radius:8px;text-align:center;cursor:pointer;font-size:13px}.radio input{display:none}.radio label.on{border-color:#171717;background:#171717;color:#fff}.err{background:#fdf2f2;border:1px solid #f3c2c2;color:#b42318;border-radius:8px;padding:10px 12px;font-size:13px;margin-top:14px}.fine{font-size:11.5px;color:#999;line-height:1.6;margin-top:14px}</style></head><body><div class="box">${inner}</div></body></html>`;
+      if (!aff || !camp) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(standalone('Link invalid', `<span class="mark">₹</span><h1>Yeh link valid nahi hai</h1><p class="muted">Link galat hai ya campaign ab live nahi hai.</p>`)); }
+      if (req.method === 'POST') {
+        const b = await readBody(req);
+        const vName = String(b.visitor_name || '').trim();
+        const vPhone = String(b.visitor_phone || '').replace(/\D/g, '').slice(-10);
+        const method = b.pay_method === 'bank' ? 'bank' : 'upi';
+        const upiId = String(b.upi_id || '').trim(), upiName = String(b.upi_name || '').trim();
+        const bank = String(b.bank_details || '').trim();
+        const bad = !vName || !/^\d{10}$/.test(vPhone) || (method === 'upi' && (!upiId || !upiName)) || (method === 'bank' && !bank);
+        if (bad) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(standalone(camp.title, `<span class="mark">₹</span><h1>Kuch details reh gayi</h1><p class="muted">Naam, sahi 10 digit phone, aur payment details (UPI ya bank) — sab bharna zaroori hai.</p><p><a href="/aff/${esc(aff.slug)}/${camp.id}">← Wapas form par jao</a></p>`)); }
+        const info = await db.prepare('INSERT INTO affiliate_leads(affiliate_id,campaign_id,visitor_name,visitor_phone,pay_method,upi_id,upi_name,bank_details,ip) VALUES(?,?,?,?,?,?,?,?,?)')
+          .run(aff.id, camp.id, vName, vPhone, method, upiId, upiName, bank, req.socket.remoteAddress || '');
+        const leadId = info.lastInsertRowid;
+        let target = String(camp.link_url || '').trim();
+        if (target) target = target.replaceAll('{click_id}', 'aff' + leadId);
+        return redirect(res, target || `/campaign/${camp.id}`);
+      }
+      const errHtml = '';
+      return html(res, 200, standalone(camp.title, `
+        <span class="mark">₹</span>
+        <h1>${esc(camp.title)}</h1>
+        <p class="muted">${esc(camp.description || '')}</p>
+        <div class="card"><p style="margin:0;font-size:12px;color:#888;font-weight:600;letter-spacing:.06em">COMPLETE KARNE PAR MILEGA</p><p class="reward" style="margin:6px 0 2px">${esc(rewardLabel(camp))}</p>
+        <p class="muted" style="margin:0">Pehle apni payment details bharo — reward seedha wahi bheja jayega. Phir Continue dabate hi offer page khul jayega.</p>
+        <form method="post" action="/aff/${esc(aff.slug)}/${camp.id}">
+          <label>Tumhara naam<input name="visitor_name" required autocomplete="name"></label>
+          <label>Phone number (10 digit)<input name="visitor_phone" required inputmode="numeric" maxlength="10" autocomplete="tel"></label>
+          <label>Reward kahan bhejein?</label>
+          <div class="radio"><label class="on" id="rUpi"><input type="radio" name="pay_method" value="upi" checked>UPI</label><label id="rBank"><input type="radio" name="pay_method" value="bank">Bank</label></div>
+          <div id="upiFields"><label>UPI ID<input name="upi_id" placeholder="name@upi"></label><label>UPI par jo naam hai<input name="upi_name"></label></div>
+          <div id="bankFields" style="display:none"><label>Bank details (Account no. · IFSC · Naam)<textarea name="bank_details" rows="3"></textarea></label></div>
+          <button class="btn" type="submit">Continue → Offer kholo</button>
+        </form>
+        <p class="fine">Details sirf reward bhejne ke liye use hongi. Offer ke steps dhyaan se poore karna — verification ke baad hi reward milega.</p></div>
+        <script>var ru=document.getElementById('rUpi'),rb=document.getElementById('rBank'),uf=document.getElementById('upiFields'),bf=document.getElementById('bankFields');function pick(up){ru.classList.toggle('on',up);rb.classList.toggle('on',!up);uf.style.display=up?'':'none';bf.style.display=up?'none':'';ru.querySelector('input').checked=up;rb.querySelector('input').checked=!up}ru.addEventListener('click',function(){pick(true)});rb.addEventListener('click',function(){pick(false)});</script>`));
     }
     if (p.startsWith('/my/campaigns/') && req.method === 'GET') {
       if (!user) return redirect(res, '/login');
@@ -563,6 +673,8 @@ const server = http.createServer(async (req, res) => {
         wallet_release: ['Reward released', 'Withdrawable'],
         referral_pending_release: ['Referral commission', 'Release pending'],
         referral_credit: ['Referral commission released', 'Withdrawable'],
+        affiliate_pending: ['Affiliate commission', 'Pending'],
+        affiliate_credit: ['Affiliate commission released', 'Withdrawable'],
         rejected_reversal: ['Reward reversed', 'Rejected'],
         withdrawal_hold: ['Withdrawal requested', 'Processing'],
         withdrawal_refund: ['Withdrawal refund', 'Returned to wallet'],
@@ -574,15 +686,20 @@ const server = http.createServer(async (req, res) => {
       }).join('');
       return layout(user, 'Wallet', `
         <div class="dash-head"><div><p class="greet-date">Account / Wallet</p><h1 class="greet" style="font-size:30px">Wallet</h1><p class="muted" style="margin:8px 0 0;font-size:12.5px;max-width:450px">Earnings yahan jama hoti hain. Approved reward ki date ke baad withdraw request bhejo.</p></div><span class="bic" style="width:40px;height:40px;border-radius:9px;background:#F4F4F4;display:flex;align-items:center;justify-content:center">${I.wallet}</span></div>
-        <section class="balances" aria-label="Wallet balances">
-          <article class="bal"><div class="top"><span class="lbl">Pending</span><span class="bic">${I.clock}</span></div><p class="amt" style="font-size:22px">${inr(fresh.pending_paise)}</p><p class="hint">Partner approval ka wait ho raha hai</p></article>
-          <article class="bal"><div class="top"><span class="lbl">Approved · release pending</span><span class="bic">${I.check}</span></div><p class="amt" style="font-size:22px">${inr(fresh.approved_paise)}</p><p class="hint">Approve ho gaya — admin expected date par release karega</p></article>
-          <article class="bal dark"><div class="top"><span class="lbl">Withdrawable</span><span class="bic">${I.wallet}</span></div><p class="amt" style="font-size:22px">${inr(fresh.withdrawable_paise)}</p><p class="hint">Abhi withdraw kar sakte ho</p></article>
+        <section class="walletcard" aria-label="Wallet card">
+          <div class="wc-top"><span class="wc-brand"><span class="mark sm">₹</span> CampaignWala</span><span class="wc-type">WALLET</span></div>
+          <div class="wc-chiprow"><span class="wc-chip"></span><span class="wc-wave">)))</span></div>
+          <p class="wc-lbl">Withdrawable balance</p>
+          <p class="wc-amt">${inr(fresh.withdrawable_paise)}</p>
+          <div class="wc-stats"><div><p class="k">Pending</p><p class="v">${inr(fresh.pending_paise)}</p></div><div><p class="k">Approved · release pending</p><p class="v">${inr(fresh.approved_paise)}</p></div></div>
+          <div class="wc-foot"><span class="wc-holder">${esc(String(fresh.name || '').toUpperCase())}</span><span class="wc-code">MEMBER · ${esc(fresh.referral_code || '')}</span></div>
+          <span class="wc-shine"></span>
         </section>
+        <div class="quickrow"><a class="btn" href="#withdraw">Withdraw karo ${I.arrowD}</a><a class="btn ghost" href="/#campaigns">Campaigns</a><a class="btn ghost" href="/refer">Referral</a></div>
         <p class="sr-only">Pending: <b>${inr(fresh.pending_paise)}</b> · Approved (release pending): <b>${inr(fresh.approved_paise)}</b> · Withdrawable balance: <b>${inr(fresh.withdrawable_paise)}</b></p>
         ${approvedList.length ? `<div class="notebox" style="margin-top:16px">${approvedList.map(a => `<p style="margin:2px 0">• ${esc(a.title)} — ${inr(a.user_reward_paise)} · Expected credit: <b>${esc(fmtDate(a.expected_credit_date))}</b></p>`).join('')}</div>` : ''}
         <div class="wallet-grid">
-          <section class="wcard"><h2>Withdraw funds</h2><p class="sub">Available balance: ${inr(fresh.withdrawable_paise)} · Minimum withdrawal: ${inr(min)}</p>
+          <section class="wcard" id="withdraw"><h2>Withdraw funds</h2><p class="sub">Available balance: ${inr(fresh.withdrawable_paise)} · Minimum withdrawal: ${inr(min)}</p>
           <form class="form" method="post" action="/wallet/withdraw" style="margin-top:16px"><label>Amount (₹)<input name="amount" type="number" min="1" required value="${esc(vals.amount ?? '')}"${inv(errs, 'amount')}>${ferr(errs, 'amount')}</label>
           <label>Method<select name="method"><option value="upi"${sel('upi')}>UPI</option><option value="bank"${sel('bank')}>Bank</option><option value="giftcard"${sel('giftcard')}>Gift Card</option></select></label>
           <label>UPI ID / Bank details / Email<input name="destination" required value="${esc(vals.destination ?? '')}"${inv(errs, 'destination')}>${ferr(errs, 'destination')}</label>
@@ -636,7 +753,7 @@ const server = http.createServer(async (req, res) => {
 async function adminRoutes(req, res, p, url, user) {
   const L = async (t, b) => await layout(user, t, b);
   // V6 admin shell: crumbs + title + access pill + tab nav (owner's design).
-  const SECTIONS = [['Campaigns', '/admin/campaigns'], ['Releases', '/admin/releases'], ['Claims', '/admin/claims'], ['Earnings', '/admin/earnings'], ['Users', '/admin/users'], ['Conversions & Postbacks', '/admin/conversions'], ['Withdrawals', '/admin/withdrawals'], ['Settings', '/admin/settings'], ['Change Password', '/admin/password']];
+  const SECTIONS = [['Campaigns', '/admin/campaigns'], ['Releases', '/admin/releases'], ['Claims', '/admin/claims'], ['Affiliate', '/admin/affiliate'], ['Earnings', '/admin/earnings'], ['Users', '/admin/users'], ['Conversions & Postbacks', '/admin/conversions'], ['Withdrawals', '/admin/withdrawals'], ['Settings', '/admin/settings'], ['Change Password', '/admin/password']];
   const A = async (t, active, sub, b) => await L(t, `<p class="crumbs">${esc(await getSetting(db, 'site_name', 'CampaignWala'))} / Admin</p>
     <div class="admin-head"><div><h1 class="admin-title">${esc(t)}</h1>${sub ? `<p class="admin-sub">${esc(sub)}</p>` : ''}</div><span class="accesspill">Admin access</span></div>
     <nav class="adminnav2" aria-label="Admin sections">${SECTIONS.map(s => `<a href="${s[1]}"${s[0] === active ? ' class="on"' : ''}>${s[0]}</a>`).join('')}</nav>${b}`);
@@ -775,6 +892,55 @@ async function adminRoutes(req, res, p, url, user) {
   if (toggleMatch && req.method === 'POST') {
     await db.prepare('UPDATE campaigns SET is_live = 1 - is_live WHERE id=?').run(toggleMatch[1]);
     return redirect(res, '/admin/campaigns');
+  }
+  if (p === '/admin/affiliate' && req.method === 'GET') {
+    const leads = await db.prepare(`SELECT l.*, c.title AS camp_title, a.first_name, a.surname, a.phone AS aff_phone FROM affiliate_leads l JOIN campaigns c ON c.id=l.campaign_id JOIN affiliates a ON a.id=l.affiliate_id ORDER BY l.id DESC LIMIT 100`).all();
+    const affCount = (await db.prepare('SELECT COUNT(*) n FROM affiliates').get()).n;
+    const actBtn = (id, action, label, cls = 'btn small ghost') => `<form method="post" action="/admin/affiliate/leads/${id}/${action}" style="display:inline"><button class="${cls}" type="submit">${label}</button></form>`;
+    const rows = leads.map(l => {
+      const pay = l.pay_method === 'bank' ? `Bank: ${esc(l.bank_details || '')}` : `UPI: ${esc(l.upi_id || '')} (${esc(l.upi_name || '')})`;
+      const status = l.status === 'completed' ? '<span class="pill black">COMPLETED</span>' : l.status === 'rejected' ? '<span class="pill">REJECTED</span>' : '<span class="pill">STARTED</span>';
+      let actions = '';
+      if (l.status === 'started') actions = actBtn(l.id, 'complete', 'Complete ✓', 'btn small') + ' ' + actBtn(l.id, 'reject', 'Reject');
+      if (l.status === 'completed' && !l.affiliate_released && Number(l.affiliate_amount_paise) > 0) actions += actBtn(l.id, 'release', 'Release commission');
+      if (l.status === 'completed' && !l.visitor_paid) actions += ' ' + actBtn(l.id, 'paid', 'Visitor paid mark karo');
+      const flags = `${l.status === 'completed' ? `<br><span style="font-weight:400;color:#888;font-size:10px">Commission: ${l.affiliate_released ? 'released ✓' : 'pending'} · Visitor: ${l.visitor_paid ? 'paid ✓' : 'NOT paid'}</span>` : ''}`;
+      return `<tr><td>${esc(fmtDay(l.created_at))}<br><span style="font-weight:400;color:#888;font-size:10px">#${l.id}</span></td><td>${esc(l.camp_title)}</td><td>${esc(l.first_name)} ${esc(l.surname)}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(l.aff_phone)}</span></td><td>${esc(l.visitor_name)}<br><span style="font-weight:400;color:#888;font-size:10px">${esc(l.visitor_phone)} · ${pay}</span></td><td>${status}${flags}</td><td>${l.status === 'completed' ? inr(l.visitor_reward_paise) + '<br><span style="font-weight:400;color:#888;font-size:10px">aff: ' + inr(l.affiliate_amount_paise) + '</span>' : '—'}</td><td style="white-space:normal">${actions || '—'}</td></tr>`;
+    }).join('');
+    return html(res, 200, await A('Affiliate Leads', 'Affiliate', `${affCount} affiliate(s). Lead Complete karne par affiliate ke wallet me commission Pending credit hota hai — Release alag button se. Visitor ka reward uski UPI/bank par manually bhejo, phir "Visitor paid" mark karo.`, `
+      <div class="tblwrap"><table class="tbl"><thead><tr><th>Date</th><th>Campaign</th><th>Affiliate</th><th>Visitor + Payment</th><th>Status</th><th>Reward</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="7">Abhi koi lead nahi.</td></tr>'}</tbody></table></div>`));
+  }
+  const leadMatch = p.match(/^\/admin\/affiliate\/leads\/(\d+)\/(complete|reject|release|paid)$/);
+  if (leadMatch && req.method === 'POST') {
+    const lead = await db.prepare('SELECT l.*, c.user_reward_paise, c.reward_mode, c.reward_min_paise, c.reward_max_paise, a.user_id AS aff_user_id FROM affiliate_leads l JOIN campaigns c ON c.id=l.campaign_id JOIN affiliates a ON a.id=l.affiliate_id WHERE l.id=?').get(leadMatch[1]);
+    if (lead) {
+      const action = leadMatch[2];
+      if (action === 'complete' && lead.status === 'started') {
+        let reward = Number(lead.user_reward_paise) || 0;
+        if (lead.reward_mode === 'random') { const lo = Number(lead.reward_min_paise) || 0, hi = Number(lead.reward_max_paise) || lo; reward = lo + Math.floor(Math.random() * (hi - lo + 1)); }
+        const pct = Number(await getSetting(db, 'affiliate_percent', '10')) || 0;
+        const amt = Math.floor(reward * pct / 100);
+        await db.prepare("UPDATE affiliate_leads SET status='completed', visitor_reward_paise=?, affiliate_amount_paise=?, completed_at=datetime('now') WHERE id=?").run(reward, amt, lead.id);
+        if (amt > 0) {
+          await db.prepare('UPDATE users SET pending_paise=pending_paise+? WHERE id=?').run(amt, lead.aff_user_id);
+          await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(lead.aff_user_id, 'affiliate_pending', amt, 'lead_' + lead.id);
+        }
+      } else if (action === 'reject' && lead.status === 'started') {
+        await db.prepare("UPDATE affiliate_leads SET status='rejected' WHERE id=?").run(lead.id);
+      } else if (action === 'release' && lead.status === 'completed' && !lead.affiliate_released && Number(lead.affiliate_amount_paise) > 0) {
+        const amt = Number(lead.affiliate_amount_paise);
+        const u = await db.prepare('SELECT pending_paise FROM users WHERE id=?').get(lead.aff_user_id);
+        const move = Math.min(amt, Number(u.pending_paise) || 0);
+        if (move > 0) {
+          await db.prepare('UPDATE users SET pending_paise=pending_paise-?, withdrawable_paise=withdrawable_paise+? WHERE id=?').run(move, move, lead.aff_user_id);
+          await db.prepare('INSERT INTO wallet_ledger(user_id,kind,amount_paise,ref) VALUES(?,?,?,?)').run(lead.aff_user_id, 'affiliate_credit', move, 'lead_' + lead.id);
+        }
+        await db.prepare('UPDATE affiliate_leads SET affiliate_released=1 WHERE id=?').run(lead.id);
+      } else if (action === 'paid' && lead.status === 'completed') {
+        await db.prepare('UPDATE affiliate_leads SET visitor_paid=1 WHERE id=?').run(lead.id);
+      }
+    }
+    return redirect(res, '/admin/affiliate');
   }
   if (p === '/admin/users' && req.method === 'GET') {
     const users = await db.prepare('SELECT * FROM users ORDER BY id DESC').all();
@@ -940,6 +1106,7 @@ async function adminRoutes(req, res, p, url, user) {
     return html(res, 200, await A('Settings', 'Settings', 'Site, referral, payout share aur feeds configuration.', `<form class="card form" method="post" action="/admin/settings" style="margin-top:20px">
       <label>Site name<input name="site_name" value="${esc(await getSetting(db, 'site_name', 'CampaignWala'))}"></label>
       <label>Referral commission %<input name="referral_percent" type="number" step="0.1" value="${esc(await getSetting(db, 'referral_percent', '10'))}"></label>
+      <label>Affiliate commission % — affiliate lead complete hone par visitor reward ka itna % affiliate ko<input name="affiliate_percent" type="number" step="0.1" value="${esc(await getSetting(db, 'affiliate_percent', '10'))}"></label>
       <label>Minimum withdrawal (₹)<input name="min_withdrawal" type="number" step="0.01" value="${Number(await getSetting(db, 'min_withdrawal_paise', '5000')) / 100}"></label>
       <label>User share % — feed import par user reward = upstream payout ka itna % (baaki admin margin, server only)<input name="user_share_percent" type="number" step="0.1" min="1" max="100" value="${esc(await getSetting(db, 'user_share_percent', '87.5'))}"></label>
       <label>Credit days — approval ke kitne din baad expected wallet credit date (admin release usi ke aas-paas karega)<input name="credit_days" type="number" min="0" value="${esc(await getSetting(db, 'credit_days', '7'))}"></label>
@@ -957,6 +1124,7 @@ async function adminRoutes(req, res, p, url, user) {
     const b = await readBody(req);
     if (b.site_name) await setSetting(db, 'site_name', b.site_name);
     if (b.referral_percent !== undefined) await setSetting(db, 'referral_percent', b.referral_percent);
+    if (b.affiliate_percent !== undefined && b.affiliate_percent !== '') await setSetting(db, 'affiliate_percent', b.affiliate_percent);
     if (b.min_withdrawal !== undefined) await setSetting(db, 'min_withdrawal_paise', String(Math.round(Number(b.min_withdrawal) * 100)));
     if (b.user_share_percent !== undefined && b.user_share_percent !== '') await setSetting(db, 'user_share_percent', b.user_share_percent);
     if (b.credit_days !== undefined && b.credit_days !== '') await setSetting(db, 'credit_days', b.credit_days);

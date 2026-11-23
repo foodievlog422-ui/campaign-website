@@ -58,6 +58,9 @@ nav.main a:hover{color:var(--ink)}
 .mmenu nav{position:absolute;right:0;top:44px;width:208px;background:#fff;border:1px solid #E8E8E8;border-radius:9px;box-shadow:0 12px 32px rgba(0,0,0,.08);padding:8px;display:flex;flex-direction:column;z-index:50}
 .mmenu nav a{padding:10px 12px;font-size:12px;color:#555;text-decoration:none;border-radius:6px}
 .mmenu nav a:hover{background:#F5F5F5;color:var(--ink)}
+.mmenu .msep{height:1px;background:#EEE;margin:6px 4px}
+.mmenu .mlink{display:block;width:100%;text-align:left;background:none;border:0;padding:10px 12px;font-size:12px;color:#555;border-radius:6px;cursor:pointer;font-family:inherit}
+.mmenu .mlink:hover{background:#F5F5F5;color:var(--ink)}
 @media(min-width:768px){.mmenu{display:none}}
 form.inline{display:inline}
 
@@ -448,3 +451,24 @@ footer.site{border-top:1px solid var(--line);background:#fff}
 @media (max-width:430px){
   .camp-row{padding:14px}
 }
+
+/* Wallet card (interactive bank-card style) */
+.walletcard{position:relative;overflow:hidden;background:linear-gradient(135deg,#262626 0%,#171717 55%,#0c0c0c 100%);color:#fff;border-radius:18px;padding:22px 22px 18px;box-shadow:0 18px 40px rgba(0,0,0,.22)}
+.walletcard .wc-top{display:flex;justify-content:space-between;align-items:center}
+.wc-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;letter-spacing:-.01em}
+.mark.sm{width:26px;height:26px;border-radius:7px;background:#fff;color:#171717;font-size:13px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+.wc-type{font-size:10px;letter-spacing:.22em;color:#a3a3a3;font-weight:600}
+.wc-chiprow{display:flex;align-items:center;gap:12px;margin-top:20px}
+.wc-chip{width:40px;height:29px;border-radius:6px;background:linear-gradient(135deg,#e8e8e8,#bdbdbd);position:relative}
+.wc-chip::after{content:"";position:absolute;inset:8px 6px;border:1px solid rgba(0,0,0,.25);border-radius:3px}
+.wc-wave{color:#8a8a8a;font-weight:700;letter-spacing:-2px;transform:rotate(90deg);display:inline-block;font-size:12px}
+.wc-lbl{margin:20px 0 0;font-size:10.5px;letter-spacing:.14em;color:#a3a3a3;font-weight:600}
+.wc-amt{margin:4px 0 0;font-size:36px;font-weight:700;letter-spacing:-.03em}
+.wc-stats{display:flex;gap:28px;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.14)}
+.wc-stats .k{margin:0;font-size:10px;letter-spacing:.1em;color:#a3a3a3;font-weight:600;text-transform:uppercase}
+.wc-stats .v{margin:3px 0 0;font-size:15.5px;font-weight:600}
+.wc-foot{display:flex;justify-content:space-between;gap:12px;margin-top:16px;font-size:10.5px;letter-spacing:.12em;color:#c9c9c9;font-weight:600}
+.wc-shine{position:absolute;top:-60%;left:-30%;width:45%;height:220%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.13),transparent);transform:rotate(8deg);animation:wcshine 4.5s ease-in-out infinite;pointer-events:none}
+@keyframes wcshine{0%,55%{left:-35%}85%,100%{left:115%}}
+.quickrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.quickrow .btn{flex:1;justify-content:center;min-width:104px}

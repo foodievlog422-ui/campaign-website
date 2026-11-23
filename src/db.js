@@ -212,6 +212,29 @@ const SQLITE_DDL = `
     rolled_reward_paise INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), processed_at TEXT DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS affiliates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+    first_name TEXT NOT NULL DEFAULT '', surname TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', dob TEXT NOT NULL DEFAULT '',
+    slug TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS affiliate_leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    affiliate_id INTEGER NOT NULL REFERENCES affiliates(id),
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+    visitor_name TEXT NOT NULL DEFAULT '', visitor_phone TEXT NOT NULL DEFAULT '',
+    pay_method TEXT NOT NULL DEFAULT 'upi', upi_id TEXT DEFAULT '', upi_name TEXT DEFAULT '',
+    bank_details TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'started',
+    visitor_reward_paise INTEGER NOT NULL DEFAULT 0,
+    affiliate_amount_paise INTEGER NOT NULL DEFAULT 0,
+    affiliate_released INTEGER NOT NULL DEFAULT 0,
+    visitor_paid INTEGER NOT NULL DEFAULT 0,
+    ip TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT DEFAULT ''
+  );
 `;
 
 // Postgres twin of SQLITE_DDL (exported for tests): same tables/columns, in the `campaign` schema.
@@ -301,10 +324,33 @@ export const PG_DDL = `
     rolled_reward_paise BIGINT NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (${NOW_PG}), processed_at TEXT DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.affiliates (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL UNIQUE REFERENCES ${PG_SCHEMA}.users(id),
+    first_name TEXT NOT NULL DEFAULT '', surname TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', dob TEXT NOT NULL DEFAULT '',
+    slug TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG})
+  );
+  CREATE TABLE IF NOT EXISTS ${PG_SCHEMA}.affiliate_leads (
+    id BIGSERIAL PRIMARY KEY,
+    affiliate_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.affiliates(id),
+    campaign_id BIGINT NOT NULL REFERENCES ${PG_SCHEMA}.campaigns(id),
+    visitor_name TEXT NOT NULL DEFAULT '', visitor_phone TEXT NOT NULL DEFAULT '',
+    pay_method TEXT NOT NULL DEFAULT 'upi', upi_id TEXT DEFAULT '', upi_name TEXT DEFAULT '',
+    bank_details TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'started',
+    visitor_reward_paise BIGINT NOT NULL DEFAULT 0,
+    affiliate_amount_paise BIGINT NOT NULL DEFAULT 0,
+    affiliate_released INTEGER NOT NULL DEFAULT 0,
+    visitor_paid INTEGER NOT NULL DEFAULT 0,
+    ip TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (${NOW_PG}), completed_at TEXT DEFAULT ''
+  );
 `;
 
 const SETTING_DEFAULTS = {
-  referral_percent: '10', min_withdrawal_paise: '5000', feed_url: '', site_name: 'CampaignWala',
+  referral_percent: '10', affiliate_percent: '10', min_withdrawal_paise: '5000', feed_url: '', site_name: 'CampaignWala',
   user_share_percent: '87.5', credit_days: '7', feeds_json: '', retention_days: '30',
   financial_retention_days: '60',
 };
