@@ -265,7 +265,7 @@ function statusPill(cl) {
   if (cl.conv_status === 'claim_submitted') return '<span class="pill grey">Claim in review</span>';
   return '<span class="pill grey">In review</span>';
 }
-const publicList = async () => (await db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all()).map(publicCampaign);
+const publicList = async () => (await db.prepare('SELECT * FROM campaigns WHERE is_live=1 AND hide_from_list=0 ORDER BY id DESC').all()).map(publicCampaign);
 
 // ---------- server ----------
 const server = http.createServer(async (req, res) => {
@@ -345,6 +345,9 @@ const server = http.createServer(async (req, res) => {
       const c = await db.prepare('SELECT * FROM campaigns WHERE id=? AND is_live=1').get(p.split('/')[2]);
       if (!c) return html(res, 404, await layout(user, 'Not found', '<h1>Campaign not found</h1>'));
       const pub = publicCampaign(c);
+      // A hidden "extra" campaign sharing this campaign's link (e.g. the F&O
+      // bonus under the demat campaign) is offered from this page only.
+      const extra = c.link_url ? await db.prepare('SELECT * FROM campaigns WHERE is_live=1 AND hide_from_list=1 AND link_url=? AND id<>? ORDER BY id LIMIT 1').get(c.link_url, c.id) : null;
       return html(res, 200, await layout(user, pub.title, `
         <a class="backlink" href="/#campaigns">${I.back} All campaigns</a>
         <div class="detail-head"><div class="icon big">${esc(pub.icon_text)}</div>
@@ -353,6 +356,7 @@ const server = http.createServer(async (req, res) => {
         <div class="reward-band"><div><p class="lbl">Campaign complete karne par tumhe milega</p><p class="amt">${esc(rewardLabel(pub))}</p>
         ${pub.reward_mode === 'random' ? '<p class="muted small" style="margin:6px 0 0">Random reward hai — exact amount campaign approve hone ke time decide hoga, is range ke andar hi milega.</p>' : ''}</div>
         <span class="when">${I.clock} Partner verification ke baad</span></div>
+        ${extra ? `<div class="reward-band" style="border-style:dashed"><div><p class="lbl">Extra kamaai — isi account par</p><p class="amt" style="font-size:24px">${esc(rewardLabel(extra))} extra</p><p class="muted small" style="margin-top:6px">${esc(extra.title)} — neeche wala campaign khol kar iske steps dekho.</p></div><a class="btn ghost" href="/campaign/${extra.id}">Extra campaign ${I.chevR}</a></div>` : ''}
         ${pub.campaign_type === 'custom' ? '<p class="notebox">Yeh manual verification campaign hai. Task ke baad apni details submit karo — team claim review karegi. Start karke link se task complete karo, phir apni progress page se claim submit karo.</p>' : ''}
         <h2 style="font-size:16px;margin-top:36px">Steps — aise complete hoga</h2><ol class="steps-list2">${pub.steps.map((s, i) => `<li><span class="n">${i + 1}</span><span class="t">${esc(s)}</span></li>`).join('')}</ol>
         <section class="rules2"><h2>Campaign rules</h2><ul>${String(pub.rules || '').split('\n').map(r => r.trim()).filter(Boolean).map(r => `<li>${esc(r)}</li>`).join('')}</ul></section>
@@ -691,7 +695,7 @@ async function adminRoutes(req, res, p, url, user) {
       const hasUpstream = Number(c.upstream_payout_paise) > 0;
       const payoutTxt = hasUpstream ? inr(c.upstream_payout_paise) : '—';
       const marginTxt = hasUpstream ? inr(c.upstream_payout_paise - c.user_reward_paise) : '—';
-      return `<article class="card"><h3>${esc(c.title)}</h3><p class="muted">${esc(c.source)} · ${esc(c.campaign_type)} · ${c.is_live ? 'LIVE' : 'OFF'}${c.reward_override ? ' · manual lock' : ''}</p>
+      return `<article class="card"><h3>${esc(c.title)}</h3><p class="muted">${esc(c.source)} · ${esc(c.campaign_type)} · ${c.is_live ? 'LIVE' : 'OFF'}${c.reward_override ? ' · manual lock' : ''}${c.hide_from_list ? ' · HIDDEN from list (extra)' : ''}</p>
       <p class="chips"><span class="chip">Company payout: <b>${payoutTxt}</b></span><span class="chip">User reward: <b>${esc(rewardLabel(c))}</b></span><span class="chip">Margin: <b>${marginTxt}</b></span></p>
       <p><a class="btn small" href="/admin/campaigns/${c.id}/edit">Edit</a></p>
       <form method="post" action="/admin/campaigns/${c.id}/toggle"><button class="btn small ghost" type="submit">${c.is_live ? 'Turn OFF' : 'Turn LIVE'}</button></form></article>`;
@@ -720,6 +724,7 @@ async function adminRoutes(req, res, p, url, user) {
     <label>Steps (ek line me ek step)<textarea name="steps" rows="5">${esc(c.id ? JSON.parse(c.steps_json || '[]').join('\n') : '')}</textarea></label>
     <label>Rules<textarea name="rules_text">${esc(c.rules_text || '')}</textarea></label>
     <label class="check"><input type="checkbox" name="is_live" value="1" ${c.is_live === undefined || c.is_live ? 'checked' : ''}> Live</label>
+    <label class="check"><input type="checkbox" name="hide_from_list" value="1" ${c.hide_from_list ? 'checked' : ''}> Home list me mat dikhao — sirf usi link wale dusre campaign ke page par "Extra" bankar khulega (jaise F&O bonus)</label>
     <button class="btn" type="submit">Save</button></form>`;
   const campFields = async (b, existing = null) => {
     const type = b.campaign_type === 'custom' ? 'custom' : 'network';
@@ -740,15 +745,16 @@ async function adminRoutes(req, res, p, url, user) {
       link: String(b.link_url || '').trim(),
       creditDays: b.credit_days === '' || b.credit_days == null ? null : Math.max(0, Math.round(Number(b.credit_days))),
       steps: JSON.stringify(parseSteps(b.steps)), rules: b.rules_text || '', live: b.is_live === '1' ? 1 : 0,
+      hide: b.hide_from_list === '1' ? 1 : 0,
     };
   };
   if (p === '/admin/campaigns/new' && req.method === 'GET') return html(res, 200, await A('New Campaign', 'Campaigns', '', campForm()));
   if (p === '/admin/campaigns/new' && req.method === 'POST') {
     const b = await readBody(req);
     const f = await campFields(b);
-    await db.prepare(`INSERT INTO campaigns(title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,steps_json,rules_text,campaign_type,reward_mode,reward_min_paise,reward_max_paise,reward_override,link_url,credit_days,source,external_id,is_live)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'manual',?,?)`)
-      .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, 'manual-' + Date.now(), f.live);
+    await db.prepare(`INSERT INTO campaigns(title,description,category,geo,icon_text,user_reward_paise,upstream_payout_paise,steps_json,rules_text,campaign_type,reward_mode,reward_min_paise,reward_max_paise,reward_override,link_url,credit_days,source,external_id,is_live,hide_from_list)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'manual',?,?,?)`)
+      .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, 'manual-' + Date.now(), f.live, f.hide);
     return redirect(res, '/admin/campaigns');
   }
   const editMatch = p.match(/^\/admin\/campaigns\/(\d+)\/edit$/);
@@ -761,8 +767,8 @@ async function adminRoutes(req, res, p, url, user) {
     const c = await db.prepare('SELECT * FROM campaigns WHERE id=?').get(editMatch[1]);
     const f = await campFields(b, c);
     await db.prepare(`UPDATE campaigns SET title=?,description=?,category=?,geo=?,icon_text=?,user_reward_paise=?,upstream_payout_paise=?,steps_json=?,rules_text=?,
-      campaign_type=?,reward_mode=?,reward_min_paise=?,reward_max_paise=?,reward_override=?,link_url=?,credit_days=?,is_live=? WHERE id=?`)
-      .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, f.live, c.id);
+      campaign_type=?,reward_mode=?,reward_min_paise=?,reward_max_paise=?,reward_override=?,link_url=?,credit_days=?,is_live=?,hide_from_list=? WHERE id=?`)
+      .run(f.title, f.description, f.category, f.geo, f.icon, f.reward, f.upstream, f.steps, f.rules, f.type, f.mode, f.min, f.max, f.override, f.link, f.creditDays, f.live, f.hide, c.id);
     return redirect(res, '/admin/campaigns');
   }
   const toggleMatch = p.match(/^\/admin\/campaigns\/(\d+)\/toggle$/);

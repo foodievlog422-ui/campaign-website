@@ -158,7 +158,7 @@ const SQLITE_DDL = `
     reward_override INTEGER NOT NULL DEFAULT 0,
     link_url TEXT DEFAULT '', credit_days INTEGER,
     source TEXT NOT NULL DEFAULT 'manual', external_id TEXT DEFAULT '',
-    is_live INTEGER NOT NULL DEFAULT 1,
+    is_live INTEGER NOT NULL DEFAULT 1, hide_from_list INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(source, external_id)
   );
@@ -247,7 +247,7 @@ export const PG_DDL = `
     reward_override INTEGER NOT NULL DEFAULT 0,
     link_url TEXT DEFAULT '', credit_days INTEGER,
     source TEXT NOT NULL DEFAULT 'manual', external_id TEXT DEFAULT '',
-    is_live INTEGER NOT NULL DEFAULT 1,
+    is_live INTEGER NOT NULL DEFAULT 1, hide_from_list INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (${NOW_PG}),
     UNIQUE(source, external_id)
   );
@@ -317,6 +317,9 @@ export async function openDb(dbPath) {
   if (url) {
     db = pgFacade(url);
     await db.exec(PG_DDL);
+    // Additive migrations for PG databases created before these columns
+    // existed (CREATE TABLE IF NOT EXISTS does not add columns).
+    await db.exec(`ALTER TABLE ${PG_SCHEMA}.campaigns ADD COLUMN IF NOT EXISTS hide_from_list INTEGER NOT NULL DEFAULT 0`);
   } else {
     db = sqliteFacade(dbPath);
     await db.exec(SQLITE_DDL);
@@ -335,6 +338,7 @@ export async function openDb(dbPath) {
       ['reward_override', 'INTEGER NOT NULL DEFAULT 0'],
       ['link_url', "TEXT DEFAULT ''"],
       ['credit_days', 'INTEGER'],
+      ['hide_from_list', 'INTEGER NOT NULL DEFAULT 0'],
     ]) await addCol('campaigns', col, def);
     for (const [col, def] of [
       ['upstream_payout_paise', 'INTEGER NOT NULL DEFAULT 0'],
