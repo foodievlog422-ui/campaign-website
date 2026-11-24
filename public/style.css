@@ -472,3 +472,9 @@ footer.site{border-top:1px solid var(--line);background:#fff}
 @keyframes wcshine{0%,55%{left:-35%}85%,100%{left:115%}}
 .quickrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .quickrow .btn{flex:1;justify-content:center;min-width:104px}
+
+/* Affiliate campaign boxes on /refer: title + reward + link in ONE box */
+.affcamp{border:1px solid #EAEAEA;border-radius:12px;padding:14px;margin-top:12px;background:#fff}
+.affcamp-head{display:flex;gap:12px;align-items:flex-start}
+.affcamp-head .t{margin:0;font-weight:600;font-size:14px;line-height:1.4}
+.affcamp-head .s{margin:3px 0 0;font-size:12px;color:#666}

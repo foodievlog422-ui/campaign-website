@@ -483,7 +483,11 @@ const server = http.createServer(async (req, res) => {
         </form></section>`;
       } else {
         const camps = await db.prepare('SELECT * FROM campaigns WHERE is_live=1 ORDER BY id DESC').all();
-        const linkRows = camps.map(c => { const l = `${proto}://${host}/aff/${aff.slug}/${c.id}`; return `<div class="refbox" style="margin-top:10px"><span class="lnk">${esc(l)}</span><button class="copybtn" type="button" data-copy="${esc(l)}">Copy</button></div><p class="muted small" style="margin:4px 0 0">${esc(c.title)} — reward ${esc(rewardLabel(c))}, tumhe ${affPct}%</p>`; }).join('');
+        const pctNum = Number(await getSetting(db, 'affiliate_percent', '10')) || 0;
+        const earnText = (c) => (c.reward_mode || 'fixed') === 'random'
+          ? `${inr(Math.floor((Number(c.reward_min_paise) || 0) * pctNum / 100))}–${inr(Math.floor((Number(c.reward_max_paise) || 0) * pctNum / 100))}`
+          : inr(Math.floor((Number(c.user_reward_paise) || 0) * pctNum / 100));
+        const linkRows = camps.map(c => { const l = `${proto}://${host}/aff/${aff.slug}/${c.id}`; return `<div class="affcamp"><div class="affcamp-head"><span class="icon">${esc(c.icon_text || 'C')}</span><div style="min-width:0"><p class="t">${esc(c.title)}</p><p class="s">User ko ${esc(rewardLabel(c))} · Tumhe ${affPct}% = <b>${earnText(c)}</b> per lead</p></div></div><div class="refbox" style="margin-top:12px"><span class="lnk">${esc(l)}</span><button class="copybtn" type="button" data-copy="${esc(l)}">Copy</button></div></div>`; }).join('');
         const leads = await db.prepare('SELECT l.*, c.title FROM affiliate_leads l JOIN campaigns c ON c.id=l.campaign_id WHERE l.affiliate_id=? ORDER BY l.id DESC LIMIT 20').all(aff.id);
         const leadRows = leads.map(l => `<div class="act-row"><span class="aic">${I.users}</span><div style="flex:1;min-width:0"><p class="at">${esc(l.title)}</p><p class="as">${esc(fmtDay(l.created_at))} · Visitor ${esc(l.visitor_phone)} · ${l.status === 'completed' ? 'Completed' : l.status === 'rejected' ? 'Rejected' : 'Started'}</p></div><span class="aamt">${l.status === 'completed' ? inr(l.affiliate_amount_paise) : '—'}</span></div>`).join('');
         const earned = ((await db.prepare("SELECT COALESCE(SUM(amount_paise),0) v FROM wallet_ledger WHERE user_id=? AND kind IN ('affiliate_pending','affiliate_credit')").get(user.id)) || {}).v || 0;
