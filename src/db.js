@@ -26,7 +26,7 @@ pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v))); // numeric
 
 export const PG_SCHEMA = 'campaign';
 const TABLES = ['settings', 'users', 'sessions', 'campaigns', 'clicks', 'conversions',
-  'wallet_ledger', 'postback_log', 'withdrawals', 'claims'];
+  'wallet_ledger', 'postback_log', 'withdrawals', 'claims', 'affiliates', 'affiliate_leads'];
 // Tables whose primary key is not a serial `id` — pg run() must not append
 // RETURNING id for them.
 const NO_ID_TABLES = new Set(['settings', 'sessions']);
